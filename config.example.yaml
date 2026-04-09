@@ -1,0 +1,44 @@
+# Pebble Benchmark Configuration
+# Based on go-ethereum's Pebble settings
+
+# Database settings
+data_dir: /tmp/pebble-bench
+cache_mb: 512
+max_open_files: 4096
+
+# MemTable settings
+# mem_table_count: 4
+# mem_table_stop_writes_threshold: 8
+
+# Compaction settings
+# max_concurrent_compactions: 8     # defaults to runtime.NumCPU
+# l0_compaction_threshold: 2
+# l0_stop_writes_threshold: 12
+# l0_compaction_concurrency: 1
+# compaction_debt_concurrency: 268435456  # 256MB
+# read_sampling_multiplier: -1            # disable seek compaction
+
+# WAL settings
+# wal_bytes_per_sync: 524288  # 512KB
+# disable_wal: false
+# no_sync: true               # async writes (go-ethereum default)
+
+# Bloom filter
+# bloom_filter_bits: 10
+
+# Benchmark settings
+benchmark:
+  name: read
+  duration: 5m
+  concurrency: 4
+  key_size: 32
+  value_size: 128
+
+  # Batch-specific (for write and mixed benchmarks)
+  batch_size: 100
+
+  # Mixed-specific (for mixed benchmark)
+  read_percent: 80
+
+  # Dataset initialization
+  init_target_size: 1GB
