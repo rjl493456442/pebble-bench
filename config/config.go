@@ -17,6 +17,7 @@ type BenchConfig struct {
 	ReadOnly bool   `yaml:"read_only"`
 
 	// MemTable settings
+	MemTableSize                *int `yaml:"mem_table_size"`
 	MemTableCount               *int `yaml:"mem_table_count"`
 	MemTableStopWritesThreshold *int `yaml:"mem_table_stop_writes_threshold"`
 
@@ -84,7 +85,7 @@ func DefaultConfig() *BenchConfig {
 	return &BenchConfig{
 		DataDir:  "/tmp/pebble-bench",
 		CacheMB:  2048,
-		Handles:  20480,
+		Handles:  40960,
 		ReadOnly: false,
 
 		MemTableCount:               intPtr(4),
@@ -144,3 +145,4 @@ func (c *BenchConfig) GetNoSync() bool {
 	}
 	return true
 }
+

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"runtime"
 
 	"github.com/cockroachdb/pebble"
@@ -16,7 +17,12 @@ func BuildPebbleOptions(cfg *BenchConfig) (*pebble.Options, func()) {
 	cache := pebble.NewCache(cacheSize)
 
 	memTableCount := cfg.GetMemTableCount()
-	memTableSize := int(cacheSize) / 2 / memTableCount
+	var memTableSize int
+	if cfg.MemTableSize != nil {
+		memTableSize = *cfg.MemTableSize
+	} else {
+		memTableSize = int(cacheSize) / 2 / memTableCount
+	}
 	if memTableSize >= maxMemTableSize {
 		memTableSize = maxMemTableSize - 1
 	}
@@ -121,6 +127,17 @@ func BuildPebbleOptions(cfg *BenchConfig) (*pebble.Options, func()) {
 	} else {
 		opts.Experimental.CompactionDebtConcurrency = 1 << 28
 	}
+
+	// Log the resolved configuration
+	log.Printf("Pebble config: data_dir=%s cache=%dMB max_open_files=%d read_only=%v",
+		cfg.DataDir, cfg.CacheMB, cfg.Handles, cfg.ReadOnly)
+	log.Printf("  MemTable: size=%dMB count=%d stop_writes_threshold=%d",
+		memTableSize/(1024*1024), memTableCount, memTableStopWrites)
+	log.Printf("  Compaction: max_concurrent=%d l0_threshold=%d l0_stop_writes=%d",
+		maxConcurrentCompactions, l0CompactionThreshold, l0StopWritesThreshold)
+	log.Printf("  WAL: bytes_per_sync=%dKB disabled=%v no_sync=%v",
+		walBytesPerSync/1024, opts.DisableWAL, cfg.GetNoSync())
+	log.Printf("  Bloom filter: %d bits", bloomBits)
 
 	cleanup := func() {
 		cache.Unref()

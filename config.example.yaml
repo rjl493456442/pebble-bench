@@ -3,10 +3,11 @@
 
 # Database settings
 data_dir: /tmp/pebble-bench
-cache_mb: 512
-max_open_files: 4096
+cache_mb: 2048
+max_open_files: 40960
 
 # MemTable settings
+# mem_table_size: 67108864            # 64MB, default: cache_mb / 2 / mem_table_count
 # mem_table_count: 4
 # mem_table_stop_writes_threshold: 8
 

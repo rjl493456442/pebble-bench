@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"strings"
 
@@ -24,11 +26,15 @@ var (
 		Name:  "data-dir",
 		Usage: "override data directory",
 	}
+	logFileFlag = &cli.StringFlag{
+		Name:  "log-file",
+		Usage: "write log output to file (in addition to stderr)",
+	}
 )
 
 // sharedFlags returns the flags common to all subcommands.
 func sharedFlags() []cli.Flag {
-	return []cli.Flag{configFlag, overrideFlag, dataDirFlag}
+	return []cli.Flag{configFlag, overrideFlag, dataDirFlag, logFileFlag}
 }
 
 // App returns the CLI application.
@@ -87,4 +93,23 @@ func loadConfig(c *cli.Context) (*config.BenchConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// setupLogFile configures log output to write to both stderr and the given file.
+// Returns a cleanup function that must be called to close the file.
+func setupLogFile(c *cli.Context) func() {
+	path := c.String(logFileFlag.Name)
+	if path == "" {
+		return func() {}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Printf("Failed to open log file %s: %v", path, err)
+		return func() {}
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	return func() {
+		log.SetOutput(os.Stderr)
+		f.Close()
+	}
 }

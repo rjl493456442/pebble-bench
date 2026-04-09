@@ -51,6 +51,9 @@ benchmarks can regenerate keys by index without storing them in memory.`,
 }
 
 func runInit(c *cli.Context) error {
+	closeLog := setupLogFile(c)
+	defer closeLog()
+
 	cfg, err := loadConfig(c)
 	if err != nil {
 		return err
@@ -76,8 +79,8 @@ func runInit(c *cli.Context) error {
 		return fmt.Errorf("target size must be specified via --target-size or config file")
 	}
 
-	log.Printf("Initializing dataset: target=%s, key_size=%d, value_size=%d, data_dir=%s",
-		cfg.Benchmark.InitTargetSize, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, cfg.DataDir)
+	log.Printf("Initializing dataset: target=%s, key_size=%d, value_size=%d",
+		cfg.Benchmark.InitTargetSize, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize)
 
 	flushTracker := metrics.NewFlushTracker()
 	writeStallTracker := metrics.NewWriteStallTracker()

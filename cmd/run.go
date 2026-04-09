@@ -67,6 +67,9 @@ Available benchmarks:
 }
 
 func runBenchmark(c *cli.Context) error {
+	closeLog := setupLogFile(c)
+	defer closeLog()
+
 	cfg, err := loadConfig(c)
 	if err != nil {
 		return err
@@ -110,8 +113,8 @@ func runBenchmark(c *cli.Context) error {
 		}
 	}
 
-	log.Printf("Config: benchmark=%s, duration=%s, concurrency=%d, data_dir=%s",
-		cfg.Benchmark.Name, cfg.Benchmark.Duration, cfg.Benchmark.Concurrency, cfg.DataDir)
+	log.Printf("Benchmark: name=%s, duration=%s, concurrency=%d",
+		cfg.Benchmark.Name, cfg.Benchmark.Duration, cfg.Benchmark.Concurrency)
 	log.Printf("Dataset: %d keys, key_size=%d, value_size=%d",
 		meta.TotalKeys, meta.KeySize, meta.ValueSize)
 

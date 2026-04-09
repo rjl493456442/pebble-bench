@@ -42,6 +42,12 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 		cfg.Handles = v
 
 	// MemTable settings
+	case "mem_table_size":
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		cfg.MemTableSize = &v
 	case "mem_table_count":
 		v, err := strconv.Atoi(value)
 		if err != nil {
@@ -179,7 +185,7 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 func ListOverrideKeys() []string {
 	return []string{
 		"data_dir", "cache_mb", "max_open_files",
-		"mem_table_count", "mem_table_stop_writes_threshold",
+		"mem_table_size", "mem_table_count", "mem_table_stop_writes_threshold",
 		"max_concurrent_compactions", "l0_compaction_threshold",
 		"l0_stop_writes_threshold", "l0_compaction_concurrency",
 		"compaction_debt_concurrency", "read_sampling_multiplier",
