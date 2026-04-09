@@ -3,6 +3,7 @@ package db
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/rjl493456442/pebble-bench/config"
@@ -24,12 +25,18 @@ func Open(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStal
 		},
 		FlushEnd: func(info pebble.FlushInfo) {
 			flushTracker.Record(info.Duration, info.InputBytes)
+			if info.Duration > time.Second*10 {
+				tables := len(info.Output)
+				log.Printf("Slow flush detected, duration: %v, bytes: %s, output-tables: %d", info.Duration, metrics.FormatSize(info.InputBytes), tables)
+			}
 		},
 		WriteStallBegin: func(info pebble.WriteStallBeginInfo) {
 			writeStallTracker.Begin()
+			log.Printf("Write stall begin reason: %s", info.Reason)
 		},
 		WriteStallEnd: func() {
 			writeStallTracker.End()
+			log.Printf("Write stall end")
 		},
 	}
 

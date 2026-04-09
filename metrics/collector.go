@@ -127,12 +127,12 @@ func (c *Collector) LogLatest() {
 		return
 	}
 	log.Printf("Pebble: disk=%s read-amp=%d compactions=%d(active=%d) debt=%s memtable=%s(%d) flushes=%d(avg=%s) stalls=%d(total=%s) bcache=%d/%d tcache=%d/%d filter=%d/%d",
-		formatSize(snap.DiskUsage),
+		FormatSize(snap.DiskUsage),
 		snap.ReadAmplification,
 		snap.CompactionCount,
 		snap.CompactionsActive,
-		formatSize(snap.CompactionDebt),
-		formatSize(snap.MemTableSize),
+		FormatSize(snap.CompactionDebt),
+		FormatSize(snap.MemTableSize),
 		snap.MemTableCount,
 		snap.FlushStats.Count,
 		snap.FlushStats.AvgTime().Round(time.Millisecond),
@@ -147,7 +147,7 @@ func (c *Collector) LogLatest() {
 	)
 }
 
-func formatSize(b uint64) string {
+func FormatSize(b uint64) string {
 	const (
 		KB = 1024
 		MB = 1024 * KB

@@ -61,7 +61,7 @@ func PrintSummary(r *Result) {
 	fmt.Printf("  stddev: %s\n", usToStr(r.Summary.StdDevUs))
 	fmt.Println()
 	fmt.Println("Pebble Metrics:")
-	fmt.Printf("  Disk Usage:      %s\n", formatSize(r.PebbleFinal.DiskUsage))
+	fmt.Printf("  Disk Usage:      %s\n", FormatSize(r.PebbleFinal.DiskUsage))
 	fmt.Printf("  Read Amp:        %d\n", r.PebbleFinal.ReadAmplification)
 	fmt.Printf("  Compactions:     %d\n", r.PebbleFinal.CompactionCount)
 	fmt.Printf("  Flushes:         %d\n", r.PebbleFinal.FlushStats.Count)
@@ -70,7 +70,7 @@ func PrintSummary(r *Result) {
 		fmt.Printf("    avg:           %s\n", fs.AvgTime().Round(time.Millisecond))
 		fmt.Printf("    min:           %s\n", fs.MinTime.Round(time.Millisecond))
 		fmt.Printf("    max:           %s\n", fs.MaxTime.Round(time.Millisecond))
-		fmt.Printf("    total bytes:   %s\n", formatSize(fs.TotalBytes))
+		fmt.Printf("    total bytes:   %s\n", FormatSize(fs.TotalBytes))
 	}
 	fmt.Printf("  Write Stalls:    %d\n", r.PebbleFinal.WriteStallStats.Count)
 	if r.PebbleFinal.WriteStallStats.Count > 0 {
@@ -131,7 +131,7 @@ func WriteMarkdown(path string, r *Result) error {
 	b.WriteString("\n## Pebble Metrics\n\n")
 	b.WriteString("| Metric | Value |\n")
 	b.WriteString("|--------|-------|\n")
-	b.WriteString(fmt.Sprintf("| Disk Usage | %s |\n", formatSize(r.PebbleFinal.DiskUsage)))
+	b.WriteString(fmt.Sprintf("| Disk Usage | %s |\n", FormatSize(r.PebbleFinal.DiskUsage)))
 	b.WriteString(fmt.Sprintf("| Read Amplification | %d |\n", r.PebbleFinal.ReadAmplification))
 	b.WriteString(fmt.Sprintf("| Compactions | %d |\n", r.PebbleFinal.CompactionCount))
 
@@ -142,7 +142,7 @@ func WriteMarkdown(path string, r *Result) error {
 		b.WriteString(fmt.Sprintf("| Flush Avg | %s |\n", fs.AvgTime().Round(time.Millisecond)))
 		b.WriteString(fmt.Sprintf("| Flush Min | %s |\n", fs.MinTime.Round(time.Millisecond)))
 		b.WriteString(fmt.Sprintf("| Flush Max | %s |\n", fs.MaxTime.Round(time.Millisecond)))
-		b.WriteString(fmt.Sprintf("| Flush Total Bytes | %s |\n", formatSize(fs.TotalBytes)))
+		b.WriteString(fmt.Sprintf("| Flush Total Bytes | %s |\n", FormatSize(fs.TotalBytes)))
 	}
 
 	// Write stall metrics
@@ -159,8 +159,8 @@ func WriteMarkdown(path string, r *Result) error {
 	b.WriteString(fmt.Sprintf("| Table Cache | %s |\n", hitRateStr(r.PebbleFinal.TableCacheHits, r.PebbleFinal.TableCacheMisses)))
 	b.WriteString(fmt.Sprintf("| Filter | %s |\n", hitRateStr(r.PebbleFinal.FilterHits, r.PebbleFinal.FilterMisses)))
 
-	b.WriteString(fmt.Sprintf("| MemTable Size | %s |\n", formatSize(r.PebbleFinal.MemTableSize)))
-	b.WriteString(fmt.Sprintf("| Compaction Debt | %s |\n", formatSize(r.PebbleFinal.CompactionDebt)))
+	b.WriteString(fmt.Sprintf("| MemTable Size | %s |\n", FormatSize(r.PebbleFinal.MemTableSize)))
+	b.WriteString(fmt.Sprintf("| Compaction Debt | %s |\n", FormatSize(r.PebbleFinal.CompactionDebt)))
 
 	// Level breakdown
 	b.WriteString("\n## Level Breakdown\n\n")
@@ -169,7 +169,7 @@ func WriteMarkdown(path string, r *Result) error {
 	for i := range 7 {
 		if r.PebbleFinal.LevelFiles[i] > 0 || r.PebbleFinal.LevelSizes[i] > 0 {
 			b.WriteString(fmt.Sprintf("| L%d | %d | %s |\n",
-				i, r.PebbleFinal.LevelFiles[i], formatSize(uint64(r.PebbleFinal.LevelSizes[i]))))
+				i, r.PebbleFinal.LevelFiles[i], FormatSize(uint64(r.PebbleFinal.LevelSizes[i]))))
 		}
 	}
 
@@ -265,7 +265,7 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 
 	b.WriteString("| Disk Usage |")
 	for _, r := range results {
-		b.WriteString(fmt.Sprintf(" %s |", formatSize(r.PebbleFinal.DiskUsage)))
+		b.WriteString(fmt.Sprintf(" %s |", FormatSize(r.PebbleFinal.DiskUsage)))
 	}
 	b.WriteString("\n")
 
@@ -347,7 +347,7 @@ func PrintComparison(baseline, current *Result) {
 
 	fmt.Println()
 	fmt.Println("Pebble Metrics:")
-	fmt.Printf("%-20s %20s %20s %10s\n", "  Disk Usage", formatSize(baseline.PebbleFinal.DiskUsage), formatSize(current.PebbleFinal.DiskUsage), pctDiff(float64(baseline.PebbleFinal.DiskUsage), float64(current.PebbleFinal.DiskUsage)))
+	fmt.Printf("%-20s %20s %20s %10s\n", "  Disk Usage", FormatSize(baseline.PebbleFinal.DiskUsage), FormatSize(current.PebbleFinal.DiskUsage), pctDiff(float64(baseline.PebbleFinal.DiskUsage), float64(current.PebbleFinal.DiskUsage)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Read Amp", baseline.PebbleFinal.ReadAmplification, current.PebbleFinal.ReadAmplification, pctDiff(float64(baseline.PebbleFinal.ReadAmplification), float64(current.PebbleFinal.ReadAmplification)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Compactions", baseline.PebbleFinal.CompactionCount, current.PebbleFinal.CompactionCount, pctDiff(float64(baseline.PebbleFinal.CompactionCount), float64(current.PebbleFinal.CompactionCount)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Flushes", baseline.PebbleFinal.FlushStats.Count, current.PebbleFinal.FlushStats.Count, pctDiff(float64(baseline.PebbleFinal.FlushStats.Count), float64(current.PebbleFinal.FlushStats.Count)))
