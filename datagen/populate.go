@@ -3,11 +3,22 @@ package datagen
 import (
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/rjl493456442/pebble-bench/metrics"
 )
+
+// progressPoint records a snapshot during population.
+type progressPoint struct {
+	elapsed      time.Duration
+	keys         uint64
+	size         int64
+	intervalRate float64 // keys/sec for this interval
+	overallRate  float64 // keys/sec overall
+}
 
 // Populate fills the database to approximately the target size.
 func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize int, writeOpts *pebble.WriteOptions) (*Meta, error) {
@@ -26,10 +37,12 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 	log.Printf("Populating database to %s (current: %s)", formatBytes(targetBytes), formatBytes(currentSize))
 
 	var (
-		rng       = rand.New(rand.NewSource(42))
-		totalKeys uint64
-		startTime = time.Now()
-		lastLog   = startTime
+		rng         = rand.New(rand.NewSource(42))
+		totalKeys   uint64
+		startTime   = time.Now()
+		lastLog     = startTime
+		lastLogKeys uint64
+		points      []progressPoint
 	)
 	for {
 		batch := db.NewBatch()
@@ -51,20 +64,33 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 
 		// Periodic progress check
 		if time.Since(lastLog) > 10*time.Second {
+			now := time.Now()
 			m = db.Metrics()
 			currentSize = int64(m.DiskSpaceUsage())
-			elapsed := time.Since(startTime)
-			keysPerSec := float64(totalKeys) / elapsed.Seconds()
 
-			log.Printf("Progress: %s / %s (%.1f%%), %d keys, %.0f keys/sec",
+			intervalKeys := totalKeys - lastLogKeys
+			intervalSec := now.Sub(lastLog).Seconds()
+			intervalRate := float64(intervalKeys) / intervalSec
+			overallRate := float64(totalKeys) / now.Sub(startTime).Seconds()
+
+			points = append(points, progressPoint{
+				elapsed:      now.Sub(startTime),
+				keys:         totalKeys,
+				size:         currentSize,
+				intervalRate: intervalRate,
+				overallRate:  overallRate,
+			})
+
+			log.Printf("Progress: %s / %s (%.1f%%), %d keys, interval %.0f keys/sec, overall %.0f keys/sec",
 				formatBytes(currentSize), formatBytes(targetBytes),
 				float64(currentSize)/float64(targetBytes)*100,
-				totalKeys, keysPerSec)
+				totalKeys, intervalRate, overallRate)
 
 			if currentSize >= targetBytes {
 				break
 			}
-			lastLog = time.Now()
+			lastLog = now
+			lastLogKeys = totalKeys
 		}
 
 		// Fast estimation check every 10K batches
@@ -84,9 +110,42 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 	m = db.Metrics()
 	finalSize := int64(m.DiskSpaceUsage())
 	elapsed := time.Since(startTime)
+	overallRate := float64(totalKeys) / elapsed.Seconds()
 
-	log.Printf("Population complete: %s, %d keys, took %s",
-		formatBytes(finalSize), totalKeys, elapsed.Round(time.Second))
+	// Print final summary
+	fmt.Println()
+	fmt.Println("========== Population Summary ==========")
+	fmt.Printf("  Total Keys:      %d\n", totalKeys)
+	fmt.Printf("  Final Size:      %s\n", formatBytes(finalSize))
+	fmt.Printf("  Duration:        %s\n", elapsed.Round(time.Second))
+	fmt.Printf("  Overall Speed:   %.0f keys/sec\n", overallRate)
+	if len(points) > 0 {
+		var minRate, maxRate float64
+		minRate = math.MaxFloat64
+		for _, p := range points {
+			if p.intervalRate < minRate {
+				minRate = p.intervalRate
+			}
+			if p.intervalRate > maxRate {
+				maxRate = p.intervalRate
+			}
+		}
+		fmt.Printf("  Min Speed:       %.0f keys/sec\n", minRate)
+		fmt.Printf("  Max Speed:       %.0f keys/sec\n", maxRate)
+	}
+	fmt.Println("=========================================")
+
+	// Print write speed chart
+	if len(points) >= 2 {
+		chartPoints := make([]metrics.ChartPoint, len(points))
+		for i, p := range points {
+			chartPoints[i] = metrics.ChartPoint{
+				Elapsed: p.elapsed,
+				Value:   p.intervalRate,
+			}
+		}
+		metrics.PrintChart("Write Speed Over Time (keys/sec)", chartPoints)
+	}
 
 	return &Meta{
 		TotalKeys: totalKeys,

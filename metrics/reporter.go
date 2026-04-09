@@ -86,6 +86,18 @@ func PrintSummary(r *Result) {
 	fmt.Printf("  Filter:          %d / %d\n", r.PebbleFinal.FilterHits,
 		r.PebbleFinal.FilterHits+r.PebbleFinal.FilterMisses)
 	fmt.Println("=======================================")
+
+	// Render ops/sec chart from tick records
+	if len(r.Ticks) >= 2 {
+		points := make([]ChartPoint, len(r.Ticks))
+		for i, t := range r.Ticks {
+			points[i] = ChartPoint{
+				Elapsed: time.Duration(t.Elapsed * float64(time.Second)),
+				Value:   t.OpsPerSec,
+			}
+		}
+		PrintChart("Ops/sec Over Time", points)
+	}
 }
 
 // WriteJSON writes results to a JSON file.
