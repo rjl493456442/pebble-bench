@@ -21,24 +21,35 @@ type progressPoint struct {
 }
 
 // Populate fills the database to approximately the target size.
-func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize int, writeOpts *pebble.WriteOptions) (*Meta, error) {
+// If existing is non-nil, population resumes from the existing key count.
+func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize int, writeOpts *pebble.WriteOptions, existing *Meta) (*Meta, error) {
 	// Check current size
 	m := db.Metrics()
 	currentSize := int64(m.DiskSpaceUsage())
 	if currentSize >= targetBytes {
 		log.Printf("Database already at %s (target %s), skipping population",
 			formatBytes(currentSize), formatBytes(targetBytes))
-
-		// Try to load existing meta, or estimate from current state
+		if existing != nil {
+			return existing, nil
+		}
 		totalKeys := uint64(currentSize) / uint64(keySize+valueSize)
 		return &Meta{TotalKeys: totalKeys, KeySize: keySize, ValueSize: valueSize}, nil
 	}
 
-	log.Printf("Populating database to %s (current: %s)", formatBytes(targetBytes), formatBytes(currentSize))
+	// Resume from existing key count
+	var startIndex uint64
+	if existing != nil {
+		startIndex = existing.TotalKeys
+		log.Printf("Extending dataset from %d keys (%s) to target %s",
+			startIndex, formatBytes(currentSize), formatBytes(targetBytes))
+	} else {
+		log.Printf("Populating database to %s (current: %s)", formatBytes(targetBytes), formatBytes(currentSize))
+	}
 
 	var (
-		rng         = rand.New(rand.NewSource(42))
-		totalKeys   uint64
+		rng         = rand.New(rand.NewSource(int64(startIndex)))
+		totalKeys   = startIndex
+		newKeys     uint64
 		startTime   = time.Now()
 		lastLog     = startTime
 		lastLogKeys uint64
@@ -55,6 +66,7 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 				return nil, fmt.Errorf("batch set: %w", err)
 			}
 			totalKeys++
+			newKeys++
 		}
 		if err := batch.Commit(writeOpts); err != nil {
 			batch.Close()
@@ -68,10 +80,10 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 			m = db.Metrics()
 			currentSize = int64(m.DiskSpaceUsage())
 
-			intervalKeys := totalKeys - lastLogKeys
+			intervalKeys := newKeys - lastLogKeys
 			intervalSec := now.Sub(lastLog).Seconds()
 			intervalRate := float64(intervalKeys) / intervalSec
-			overallRate := float64(totalKeys) / now.Sub(startTime).Seconds()
+			overallRate := float64(newKeys) / now.Sub(startTime).Seconds()
 
 			points = append(points, progressPoint{
 				elapsed:      now.Sub(startTime),
@@ -90,7 +102,7 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 				break
 			}
 			lastLog = now
-			lastLogKeys = totalKeys
+			lastLogKeys = newKeys
 		}
 
 		// Fast estimation check every 10K batches
@@ -110,11 +122,12 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 	m = db.Metrics()
 	finalSize := int64(m.DiskSpaceUsage())
 	elapsed := time.Since(startTime)
-	overallRate := float64(totalKeys) / elapsed.Seconds()
+	overallRate := float64(newKeys) / elapsed.Seconds()
 
 	// Print final summary
 	fmt.Println()
 	fmt.Println("========== Population Summary ==========")
+	fmt.Printf("  New Keys:        %d\n", newKeys)
 	fmt.Printf("  Total Keys:      %d\n", totalKeys)
 	fmt.Printf("  Final Size:      %s\n", formatBytes(finalSize))
 	fmt.Printf("  Duration:        %s\n", elapsed.Round(time.Second))

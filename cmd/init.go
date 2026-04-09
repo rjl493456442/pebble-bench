@@ -82,6 +82,9 @@ func runInit(c *cli.Context) error {
 	log.Printf("Initializing dataset: target=%s, key_size=%d, value_size=%d",
 		cfg.Benchmark.InitTargetSize, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize)
 
+	// Load existing metadata if extending a dataset
+	existing, _ := datagen.LoadMeta(cfg.DataDir)
+
 	flushTracker := metrics.NewFlushTracker()
 	writeStallTracker := metrics.NewWriteStallTracker()
 	database, writeOpts, cleanup, err := db.OpenForInit(cfg, flushTracker, writeStallTracker)
@@ -90,7 +93,7 @@ func runInit(c *cli.Context) error {
 	}
 	defer cleanup()
 
-	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, writeOpts)
+	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, writeOpts, existing)
 	if err != nil {
 		return err
 	}
