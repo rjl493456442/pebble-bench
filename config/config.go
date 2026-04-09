@@ -29,7 +29,8 @@ type BenchConfig struct {
 	CompactionDebtConcurrency *uint64 `yaml:"compaction_debt_concurrency"`
 	ReadSamplingMultiplier    *int64  `yaml:"read_sampling_multiplier"`
 
-	// WAL settings
+	// Sync settings
+	BytesPerSync    *int  `yaml:"bytes_per_sync"`
 	WALBytesPerSync *int  `yaml:"wal_bytes_per_sync"`
 	DisableWAL      *bool `yaml:"disable_wal"`
 	NoSync          *bool `yaml:"no_sync"`
@@ -44,9 +45,41 @@ type BenchConfig struct {
 	Benchmark BenchmarkConfig `yaml:"benchmark"`
 }
 
-// LevelConfig defines per-level options.
+// LevelConfig defines per-level options. Any field left at its zero value
+// inherits the go-ethereum / pebble default for that level, so a level entry
+// only needs to specify the options it wants to override.
 type LevelConfig struct {
+	// TargetFileSize is the target SSTable size for the level, in bytes.
 	TargetFileSize int64 `yaml:"target_file_size"`
+
+	// Compression selects the per-block compression algorithm. One of
+	// "default", "none", "snappy" or "zstd" (case-insensitive). Empty keeps
+	// the pebble default (snappy).
+	Compression string `yaml:"compression"`
+
+	// BlockSize is the target uncompressed size of each data block, in bytes
+	// (pebble default: 4096).
+	BlockSize int `yaml:"block_size"`
+
+	// BlockRestartInterval is the number of keys between restart points for
+	// delta encoding of keys (pebble default: 16).
+	BlockRestartInterval int `yaml:"block_restart_interval"`
+
+	// BlockSizeThreshold finishes a block once it grows past this percentage
+	// of the target block size (pebble default: 90).
+	BlockSizeThreshold int `yaml:"block_size_threshold"`
+
+	// IndexBlockSize is the target uncompressed size of each index block, in
+	// bytes (pebble default: equal to BlockSize).
+	IndexBlockSize int `yaml:"index_block_size"`
+
+	// NoFilter disables the bloom filter for this level, overriding the
+	// default policy (bloom on every level except the last).
+	NoFilter bool `yaml:"no_filter"`
+
+	// BloomFilterBits overrides the number of bloom filter bits per key for
+	// this level. When nil, the database-wide bloom_filter_bits is used.
+	BloomFilterBits *int `yaml:"bloom_filter_bits"`
 }
 
 // BenchmarkConfig holds benchmark-specific parameters.
@@ -128,6 +161,20 @@ func LoadConfig(path string) (*BenchConfig, error) {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 	return cfg, nil
+}
+
+// Validate checks the configuration for invalid values, returning the first
+// error encountered.
+func (c *BenchConfig) Validate() error {
+	for i, l := range c.Levels {
+		if _, ok := parseCompression(l.Compression); !ok {
+			return fmt.Errorf("levels[%d]: invalid compression %q (want one of: default, none, snappy, zstd)", i, l.Compression)
+		}
+		if l.BloomFilterBits != nil && *l.BloomFilterBits < 0 {
+			return fmt.Errorf("levels[%d]: bloom_filter_bits must not be negative", i)
+		}
+	}
+	return nil
 }
 
 // GetMemTableCount returns the configured memtable count or the default.

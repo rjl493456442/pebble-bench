@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"runtime"
+	"strings"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/bloom"
@@ -65,6 +67,11 @@ func BuildPebbleOptions(cfg *BenchConfig) (*pebble.Options, func()) {
 		l0StopWritesThreshold = *cfg.L0StopWritesThreshold
 	}
 
+	bytesPerSync := 512 * 1024
+	if cfg.BytesPerSync != nil {
+		bytesPerSync = *cfg.BytesPerSync
+	}
+
 	// Pebble is configured to use asynchronous write mode, meaning write operations
 	// return as soon as the data is cached in memory, without waiting for the WAL
 	// to be written. This mode offers better write performance but risks losing
@@ -97,6 +104,7 @@ func BuildPebbleOptions(cfg *BenchConfig) (*pebble.Options, func()) {
 		L0StopWritesThreshold: l0StopWritesThreshold,
 		Levels:                levels,
 		ReadOnly:              cfg.ReadOnly,
+		BytesPerSync:          bytesPerSync,
 		WALBytesPerSync:       walBytesPerSync,
 	}
 
@@ -135,9 +143,24 @@ func BuildPebbleOptions(cfg *BenchConfig) (*pebble.Options, func()) {
 		memTableSize/(1024*1024), memTableCount, memTableStopWrites)
 	log.Printf("  Compaction: max_concurrent=%d l0_threshold=%d l0_stop_writes=%d",
 		maxConcurrentCompactions, l0CompactionThreshold, l0StopWritesThreshold)
-	log.Printf("  WAL: bytes_per_sync=%dKB disabled=%v no_sync=%v",
-		walBytesPerSync/1024, opts.DisableWAL, cfg.GetNoSync())
+	log.Printf("  Sync: bytes_per_sync=%dKB wal_bytes_per_sync=%dKB",
+		bytesPerSync/1024, walBytesPerSync/1024)
+	log.Printf("  WAL: disabled=%v no_sync=%v",
+		opts.DisableWAL, cfg.GetNoSync())
 	log.Printf("  Bloom filter: %d bits", bloomBits)
+	for i := range levels {
+		l := &levels[i]
+		filter := "none"
+		if l.FilterPolicy != nil {
+			filter = "bloom"
+		}
+		blockSize := "default"
+		if l.BlockSize > 0 {
+			blockSize = fmt.Sprintf("%dB", l.BlockSize)
+		}
+		log.Printf("  L%d: target_file_size=%dMB compression=%s block_size=%s filter=%s",
+			i, l.TargetFileSize/(1024*1024), l.Compression, blockSize, filter)
+	}
 
 	cleanup := func() {
 		cache.Unref()
@@ -145,40 +168,99 @@ func BuildPebbleOptions(cfg *BenchConfig) (*pebble.Options, func()) {
 	return opts, cleanup
 }
 
-// buildLevelOptions creates pebble.LevelOptions from config or uses go-ethereum defaults.
-func buildLevelOptions(levels []LevelConfig, bloomBits int) []pebble.LevelOptions {
-	if len(levels) > 0 {
-		opts := make([]pebble.LevelOptions, len(levels))
-		for i, l := range levels {
-			opts[i] = pebble.LevelOptions{
-				TargetFileSize: l.TargetFileSize,
-			}
-			if bloomBits > 0 && i < len(levels)-1 {
-				opts[i].FilterPolicy = bloom.FilterPolicy(bloomBits)
-			}
-		}
-		return opts
-	}
+// defaultLevelTargetSizes are the go-ethereum default per-level target file
+// sizes: 7 levels with doubling sizes from 2MB to 128MB.
+var defaultLevelTargetSizes = []int64{
+	2 << 20,   // 2MB
+	4 << 20,   // 4MB
+	8 << 20,   // 8MB
+	16 << 20,  // 16MB
+	32 << 20,  // 32MB
+	64 << 20,  // 64MB
+	128 << 20, // 128MB
+}
 
-	// Go-ethereum defaults: 7 levels with doubling target file sizes
-	targetSizes := []int64{
-		2 << 20,   // 2MB
-		4 << 20,   // 4MB
-		8 << 20,   // 8MB
-		16 << 20,  // 16MB
-		32 << 20,  // 32MB
-		64 << 20,  // 64MB
-		128 << 20, // 128MB
-	}
-	opts := make([]pebble.LevelOptions, len(targetSizes))
-	for i, size := range targetSizes {
-		opts[i] = pebble.LevelOptions{
-			TargetFileSize: size,
+// buildLevelOptions builds the per-level pebble options by overlaying the
+// per-level overrides from the config on top of the go-ethereum defaults.
+// Levels and individual fields left unset inherit the default for that level,
+// so the config only needs to specify the options it wants to change.
+func buildLevelOptions(levels []LevelConfig, bloomBits int) []pebble.LevelOptions {
+	// The number of levels is the larger of the defaults and the overrides so
+	// that callers can both tweak existing levels and add deeper ones.
+	n := max(len(defaultLevelTargetSizes), len(levels))
+
+	opts := make([]pebble.LevelOptions, n)
+	for i := range opts {
+		// Start from the go-ethereum default for this level. Levels beyond the
+		// defaults inherit the largest default target size.
+		if i < len(defaultLevelTargetSizes) {
+			opts[i].TargetFileSize = defaultLevelTargetSizes[i]
+		} else {
+			opts[i].TargetFileSize = defaultLevelTargetSizes[len(defaultLevelTargetSizes)-1]
 		}
-		// Bloom filter on levels 0-5, not on level 6
-		if bloomBits > 0 && i < len(targetSizes)-1 {
+		// By default, apply the bloom filter on every level except the last.
+		if bloomBits > 0 && i < n-1 {
 			opts[i].FilterPolicy = bloom.FilterPolicy(bloomBits)
+		}
+		// Overlay the user-provided overrides for this level, if any.
+		if i < len(levels) {
+			applyLevelConfig(&opts[i], levels[i])
 		}
 	}
 	return opts
+}
+
+// applyLevelConfig overlays the non-zero fields of a LevelConfig onto the given
+// pebble.LevelOptions, leaving the rest at their inherited defaults.
+func applyLevelConfig(opt *pebble.LevelOptions, l LevelConfig) {
+	if l.TargetFileSize > 0 {
+		opt.TargetFileSize = l.TargetFileSize
+	}
+	if l.BlockSize > 0 {
+		opt.BlockSize = l.BlockSize
+	}
+	if l.BlockRestartInterval > 0 {
+		opt.BlockRestartInterval = l.BlockRestartInterval
+	}
+	if l.BlockSizeThreshold > 0 {
+		opt.BlockSizeThreshold = l.BlockSizeThreshold
+	}
+	if l.IndexBlockSize > 0 {
+		opt.IndexBlockSize = l.IndexBlockSize
+	}
+	if l.Compression != "" {
+		if c, ok := parseCompression(l.Compression); ok {
+			opt.Compression = c
+		}
+	}
+	// Filter overrides: NoFilter disables it entirely, otherwise a per-level
+	// bloom-bits override replaces the default policy.
+	switch {
+	case l.NoFilter:
+		opt.FilterPolicy = nil
+	case l.BloomFilterBits != nil:
+		if *l.BloomFilterBits > 0 {
+			opt.FilterPolicy = bloom.FilterPolicy(*l.BloomFilterBits)
+		} else {
+			opt.FilterPolicy = nil
+		}
+	}
+}
+
+// parseCompression maps a config string to a pebble.Compression value. An empty
+// string selects the pebble default (snappy). The boolean result reports
+// whether the string was recognised.
+func parseCompression(s string) (pebble.Compression, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "default":
+		return pebble.DefaultCompression, true
+	case "none", "no", "nocompression":
+		return pebble.NoCompression, true
+	case "snappy":
+		return pebble.SnappyCompression, true
+	case "zstd":
+		return pebble.ZstdCompression, true
+	default:
+		return pebble.DefaultCompression, false
+	}
 }

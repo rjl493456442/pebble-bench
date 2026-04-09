@@ -92,6 +92,9 @@ func loadConfig(c *cli.Context) (*config.BenchConfig, error) {
 		cfg.DataDir = dataDir
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 

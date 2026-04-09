@@ -19,13 +19,35 @@ max_open_files: 40960
 # compaction_debt_concurrency: 268435456  # 256MB
 # read_sampling_multiplier: -1            # disable seek compaction
 
-# WAL settings
-# wal_bytes_per_sync: 524288  # 512KB
+# Sync settings
+# bytes_per_sync: 524288      # 512KB, SSTable periodic sync
+# wal_bytes_per_sync: 524288  # 512KB, WAL periodic sync
 # disable_wal: false
 # no_sync: true               # async writes (go-ethereum default)
 
 # Bloom filter
 # bloom_filter_bits: 10
+
+# Per-level options (optional).
+# Each entry overlays onto the go-ethereum defaults (7 levels, target file
+# sizes doubling from 2MB to 128MB, bloom filter on every level except the
+# last). Any field left unset inherits the default for that level, so a level
+# only needs to list the options it wants to change. Levels are matched by
+# position: the first entry is L0, the second L1, and so on.
+#
+# levels:
+#   - target_file_size: 2097152   # 2MB
+#     compression: none           # default | none | snappy | zstd
+#     block_size: 4096            # data block target size in bytes
+#     block_restart_interval: 16
+#     block_size_threshold: 90
+#     index_block_size: 4096
+#     # no_filter: true           # disable the bloom filter on this level
+#     # bloom_filter_bits: 10     # override bloom bits for this level
+#   - target_file_size: 4194304   # 4MB, other fields inherit defaults
+#   - {}                          # L2 fully inherits defaults
+#   - compression: zstd           # L3: only change compression
+#     target_file_size: 16777216  # 16MB
 
 # Benchmark settings
 benchmark:

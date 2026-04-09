@@ -99,7 +99,13 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 		}
 		cfg.ReadSamplingMultiplier = &v
 
-	// WAL settings
+	// Sync settings
+	case "bytes_per_sync":
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		cfg.BytesPerSync = &v
 	case "wal_bytes_per_sync":
 		v, err := strconv.Atoi(value)
 		if err != nil {
@@ -189,7 +195,7 @@ func ListOverrideKeys() []string {
 		"max_concurrent_compactions", "l0_compaction_threshold",
 		"l0_stop_writes_threshold", "l0_compaction_concurrency",
 		"compaction_debt_concurrency", "read_sampling_multiplier",
-		"wal_bytes_per_sync", "disable_wal", "no_sync",
+		"bytes_per_sync", "wal_bytes_per_sync", "disable_wal", "no_sync",
 		"bloom_filter_bits",
 		"benchmark.name", "benchmark.duration", "benchmark.concurrency",
 		"benchmark.num_ops", "benchmark.key_size", "benchmark.value_size",
