@@ -99,7 +99,7 @@ func Execute(db *pebble.DB, writeOpts *pebble.WriteOptions, cfg *config.BenchCon
 	}
 
 	// Print periodic stats and collect tick records
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	var tickRecords []metrics.TickRecord
@@ -117,7 +117,7 @@ func Execute(db *pebble.DB, writeOpts *pebble.WriteOptions, cfg *config.BenchCon
 					tickMu.Lock()
 					tickRecords = append(tickRecords, metrics.TickRecord{
 						Elapsed:   t.Elapsed.Seconds(),
-						OpsPerSec: float64(t.Hist.TotalCount()),
+						OpsPerSec: t.IntervalOpsPerSec(),
 						P50Us:     t.Hist.ValueAtPercentile(50) / int64(time.Microsecond),
 						P99Us:     t.Hist.ValueAtPercentile(99) / int64(time.Microsecond),
 					})

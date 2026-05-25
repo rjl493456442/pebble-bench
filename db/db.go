@@ -15,10 +15,12 @@ import (
 // Environment variables:
 //   PEBBLE_BENCH_SLOW_FLUSH_THRESHOLD - duration threshold for slow flush warnings (e.g. "5s", "10s"). Default: disabled.
 //   PEBBLE_BENCH_LOG_COMPACTION       - set to "1" or "true" to enable compaction begin/end logging. Default: disabled.
+//   PEBBLE_BENCH_LOG_WRITE_STALL      - set to "1" or "true" to enable write stall begin/end logging. Default: disabled.
 
 var (
 	slowFlushThreshold time.Duration
 	logCompaction      bool
+	logWriteStall      bool
 )
 
 func init() {
@@ -29,6 +31,9 @@ func init() {
 	}
 	if v := os.Getenv("PEBBLE_BENCH_LOG_COMPACTION"); v != "" {
 		logCompaction, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("PEBBLE_BENCH_LOG_WRITE_STALL"); v != "" {
+		logWriteStall, _ = strconv.ParseBool(v)
 	}
 }
 
@@ -48,11 +53,15 @@ func Open(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStal
 		},
 		WriteStallBegin: func(info pebble.WriteStallBeginInfo) {
 			writeStallTracker.Begin()
-			log.Printf("Write stall begin reason: %s", info.Reason)
+			if logWriteStall {
+				log.Printf("Write stall begin reason: %s", info.Reason)
+			}
 		},
 		WriteStallEnd: func() {
 			writeStallTracker.End()
-			log.Printf("Write stall end")
+			if logWriteStall {
+				log.Printf("Write stall end")
+			}
 		},
 	}
 	if logCompaction {
