@@ -5,16 +5,16 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/rjl493456442/pebble-bench/config"
 	"github.com/rjl493456442/pebble-bench/datagen"
+	"github.com/rjl493456442/pebble-bench/db"
 	"github.com/rjl493456442/pebble-bench/metrics"
 )
 
 // Mixed performs a mix of reads and batch writes based on a configurable ratio.
 type Mixed struct {
-	db          *pebble.DB
-	writeOpts   *pebble.WriteOptions
+	db          db.DB
+	sync        bool
 	totalKeys   uint64
 	readPercent int
 	batchSize   int
@@ -23,9 +23,9 @@ type Mixed struct {
 
 func (m *Mixed) Name() string { return "mixed" }
 
-func (m *Mixed) Setup(db *pebble.DB, writeOpts *pebble.WriteOptions, cfg *config.BenchmarkConfig, meta *datagen.Meta) error {
-	m.db = db
-	m.writeOpts = writeOpts
+func (m *Mixed) Setup(database db.DB, sync bool, cfg *config.BenchmarkConfig, meta *datagen.Meta) error {
+	m.db = database
+	m.sync = sync
 	m.totalKeys = meta.TotalKeys
 	m.readPercent = cfg.ReadPercent
 	m.batchSize = cfg.BatchSize
@@ -59,7 +59,7 @@ func (m *Mixed) Run(ctx context.Context, workerID int, hist *metrics.NamedHistog
 			_, closer, err := m.db.Get(key)
 			elapsed := time.Since(start)
 
-			if err == pebble.ErrNotFound {
+			if err == db.ErrNotFound {
 				continue
 			}
 			if err != nil {
@@ -72,14 +72,14 @@ func (m *Mixed) Run(ctx context.Context, workerID int, hist *metrics.NamedHistog
 			for range m.batchSize {
 				key := datagen.RandomValue(rng, 32)
 				val := datagen.RandomValue(rng, m.valueSize)
-				if err := batch.Set(key, val, nil); err != nil {
+				if err := batch.Set(key, val); err != nil {
 					batch.Close()
 					return err
 				}
 			}
 
 			start := time.Now()
-			err := batch.Commit(m.writeOpts)
+			err := batch.Commit(m.sync)
 			elapsed := time.Since(start)
 			batch.Close()
 

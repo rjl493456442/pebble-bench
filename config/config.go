@@ -16,6 +16,9 @@ type BenchConfig struct {
 	Handles  int    `yaml:"max_open_files"`
 	ReadOnly bool   `yaml:"read_only"`
 
+	// PebbleV2 selects the Pebble v2 backend instead of the default v1.
+	PebbleV2 bool `yaml:"pebble_v2"`
+
 	// MemTable settings
 	MemTableSize                *int `yaml:"mem_table_size"`
 	MemTableCount               *int `yaml:"mem_table_count"`

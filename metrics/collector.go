@@ -5,8 +5,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/cockroachdb/pebble"
 )
 
 // PebbleSnapshot captures a point-in-time view of Pebble metrics.
@@ -33,7 +31,7 @@ type PebbleSnapshot struct {
 
 // Collector periodically captures Pebble internal metrics.
 type Collector struct {
-	db                *pebble.DB
+	src               MetricsSource
 	interval          time.Duration
 	flushTracker      *FlushTracker
 	writeStallTracker *WriteStallTracker
@@ -43,9 +41,9 @@ type Collector struct {
 }
 
 // NewCollector creates a new metrics collector.
-func NewCollector(db *pebble.DB, interval time.Duration, flushTracker *FlushTracker, writeStallTracker *WriteStallTracker) *Collector {
+func NewCollector(src MetricsSource, interval time.Duration, flushTracker *FlushTracker, writeStallTracker *WriteStallTracker) *Collector {
 	return &Collector{
-		db:                db,
+		src:               src,
 		interval:          interval,
 		flushTracker:      flushTracker,
 		writeStallTracker: writeStallTracker,
@@ -68,33 +66,27 @@ func (c *Collector) Run(ctx context.Context) {
 }
 
 func (c *Collector) capture() {
-	m := c.db.Metrics()
+	m := c.src.Metrics()
 	snap := PebbleSnapshot{
 		Timestamp:         time.Now(),
-		DiskUsage:         m.DiskSpaceUsage(),
-		CompactionCount:   m.Compact.Count,
-		CompactionDebt:    m.Compact.EstimatedDebt,
-		CompactionsActive: m.Compact.NumInProgress,
-		MemTableSize:      m.MemTable.Size,
-		MemTableCount:     m.MemTable.Count,
+		DiskUsage:         m.DiskSpaceUsage,
+		ReadAmplification: m.ReadAmplification,
+		CompactionCount:   m.CompactionCount,
+		CompactionDebt:    m.CompactionDebt,
+		CompactionsActive: m.CompactionsActive,
+		MemTableSize:      m.MemTableSize,
+		MemTableCount:     m.MemTableCount,
 		FlushStats:        c.flushTracker.Stats(),
 		WriteStallStats:   c.writeStallTracker.Stats(),
-		BlockCacheHits:    m.BlockCache.Hits,
-		BlockCacheMisses:  m.BlockCache.Misses,
-		TableCacheHits:    m.TableCache.Hits,
-		TableCacheMisses:  m.TableCache.Misses,
-		FilterHits:        m.Filter.Hits,
-		FilterMisses:      m.Filter.Misses,
+		BlockCacheHits:    m.BlockCacheHits,
+		BlockCacheMisses:  m.BlockCacheMisses,
+		TableCacheHits:    m.TableCacheHits,
+		TableCacheMisses:  m.TableCacheMisses,
+		FilterHits:        m.FilterHits,
+		FilterMisses:      m.FilterMisses,
+		LevelSizes:        m.LevelSizes,
+		LevelFiles:        m.LevelFiles,
 	}
-
-	// Compute read amplification as total L0 sub-levels
-	for i, l := range m.Levels {
-		if i < 7 {
-			snap.LevelSizes[i] = l.Size
-			snap.LevelFiles[i] = l.NumFiles
-		}
-	}
-	snap.ReadAmplification = int(m.ReadAmp())
 
 	c.mu.Lock()
 	c.snapshots = append(c.snapshots, snap)

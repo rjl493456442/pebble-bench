@@ -1,13 +1,12 @@
 package db
 
 import (
-	"fmt"
-	"log"
+	"errors"
+	"io"
 	"os"
 	"strconv"
 	"time"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/rjl493456442/pebble-bench/config"
 	"github.com/rjl493456442/pebble-bench/metrics"
 )
@@ -37,64 +36,70 @@ func init() {
 	}
 }
 
-// Open opens a Pebble database with the given config.
-// Returns the DB, write options, and a cleanup function that must be called on close.
-func Open(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) (*pebble.DB, *pebble.WriteOptions, func(), error) {
-	opts, cacheCleanup := config.BuildPebbleOptions(cfg)
+// ErrNotFound is returned by DB.Get when the requested key does not exist. Each
+// backend translates its own not-found sentinel into this value so callers can
+// compare against a single, version-independent error.
+var ErrNotFound = errors.New("pebble: not found")
 
-	// Set up event listener for tracking flushes, write stalls, and optional logging
-	listener := &pebble.EventListener{
-		FlushEnd: func(info pebble.FlushInfo) {
-			flushTracker.Record(info.Duration, info.InputBytes)
-			if slowFlushThreshold > 0 && info.Duration > slowFlushThreshold {
-				log.Printf("Slow flush detected, duration: %v, bytes: %s, output-tables: %d",
-					info.Duration, metrics.FormatSize(info.InputBytes), len(info.Output))
-			}
-		},
-		WriteStallBegin: func(info pebble.WriteStallBeginInfo) {
-			writeStallTracker.Begin()
-			if logWriteStall {
-				log.Printf("Write stall begin reason: %s", info.Reason)
-			}
-		},
-		WriteStallEnd: func() {
-			writeStallTracker.End()
-			if logWriteStall {
-				log.Printf("Write stall end")
-			}
-		},
-	}
-	if logCompaction {
-		listener.CompactionBegin = func(info pebble.CompactionInfo) {
-			log.Printf("compaction L%d -> L%d started", info.Input[0].Level, info.Output.Level)
-		}
-		listener.CompactionEnd = func(info pebble.CompactionInfo) {
-			log.Printf("compaction L%d -> L%d completed", info.Input[0].Level, info.Output.Level)
-		}
-	}
-	opts.EventListener = listener
+// DB is the version-agnostic key-value database interface used by the
+// benchmarks. It is implemented by adapters around both Pebble v1 and v2.
+type DB interface {
+	// NewBatch creates a new write batch.
+	NewBatch() Batch
 
-	database, err := pebble.Open(cfg.DataDir, opts)
-	if err != nil {
-		cacheCleanup()
-		return nil, nil, nil, fmt.Errorf("opening pebble database: %w", err)
-	}
+	// Get returns the value for the given key. It returns ErrNotFound if the
+	// key is absent. On success the caller must Close the returned closer.
+	Get(key []byte) (value []byte, closer io.Closer, err error)
 
-	writeOpts := pebble.Sync
-	if cfg.GetNoSync() {
-		writeOpts = pebble.NoSync
-	}
+	// NewIter creates an iterator over the whole keyspace.
+	NewIter() (Iterator, error)
 
-	cleanup := func() {
-		if err := database.Close(); err != nil {
-			log.Printf("error closing database: %v", err)
-		}
-		cacheCleanup()
-	}
-	return database, writeOpts, cleanup, nil
+	// Flush flushes the memtable(s) to stable storage.
+	Flush() error
+
+	// Metrics returns a normalized snapshot of the internal metrics.
+	Metrics() *metrics.DBMetrics
+
+	// Close closes the database and releases associated resources.
+	Close() error
 }
 
-// OpenForInit opens a Pebble database optimized for bulk data loading.
-func OpenForInit(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) (*pebble.DB, *pebble.WriteOptions, func(), error) {
+// Batch is a version-agnostic write batch.
+type Batch interface {
+	// Set adds a key/value pair to the batch.
+	Set(key, value []byte) error
+
+	// Commit applies the batch. When sync is true the commit waits for the WAL
+	// to be persisted.
+	Commit(sync bool) error
+
+	// Close releases the batch resources.
+	Close() error
+}
+
+// Iterator is a version-agnostic forward iterator.
+type Iterator interface {
+	First() bool
+	Next() bool
+	Valid() bool
+	Error() error
+	Close() error
+}
+
+// Open opens a database using the backend selected by cfg.PebbleV2 and returns
+// the database, whether commits should be synchronous, and a cleanup function
+// that must be called on close.
+func Open(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) (DB, bool, func(), error) {
+	sync := !cfg.GetNoSync()
+	if cfg.PebbleV2 {
+		database, cleanup, err := openV2(cfg, flushTracker, writeStallTracker)
+		return database, sync, cleanup, err
+	}
+	database, cleanup, err := openV1(cfg, flushTracker, writeStallTracker)
+	return database, sync, cleanup, err
+}
+
+// OpenForInit opens a database optimized for bulk data loading.
+func OpenForInit(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) (DB, bool, func(), error) {
 	return Open(cfg, flushTracker, writeStallTracker)
 }

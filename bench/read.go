@@ -5,22 +5,22 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/rjl493456442/pebble-bench/config"
 	"github.com/rjl493456442/pebble-bench/datagen"
+	"github.com/rjl493456442/pebble-bench/db"
 	"github.com/rjl493456442/pebble-bench/metrics"
 )
 
 // Read reads keys in random order.
 type Read struct {
-	db        *pebble.DB
+	db        db.DB
 	totalKeys uint64
 }
 
 func (r *Read) Name() string { return "read" }
 
-func (r *Read) Setup(db *pebble.DB, _ *pebble.WriteOptions, _ *config.BenchmarkConfig, meta *datagen.Meta) error {
-	r.db = db
+func (r *Read) Setup(database db.DB, _ bool, _ *config.BenchmarkConfig, meta *datagen.Meta) error {
+	r.db = database
 	r.totalKeys = meta.TotalKeys
 	return nil
 }
@@ -42,7 +42,7 @@ func (r *Read) Run(ctx context.Context, workerID int, hist *metrics.NamedHistogr
 		_, closer, err := r.db.Get(key)
 		elapsed := time.Since(start)
 
-		if err == pebble.ErrNotFound {
+		if err == db.ErrNotFound {
 			continue
 		}
 		if err != nil {

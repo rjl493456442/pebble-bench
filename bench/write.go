@@ -5,25 +5,25 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/rjl493456442/pebble-bench/config"
 	"github.com/rjl493456442/pebble-bench/datagen"
+	"github.com/rjl493456442/pebble-bench/db"
 	"github.com/rjl493456442/pebble-bench/metrics"
 )
 
 // Write performs batched key-value writes.
 type Write struct {
-	db        *pebble.DB
-	writeOpts *pebble.WriteOptions
+	db        db.DB
+	sync      bool
 	batchSize int
 	valueSize int
 }
 
 func (b *Write) Name() string { return "write" }
 
-func (b *Write) Setup(db *pebble.DB, writeOpts *pebble.WriteOptions, cfg *config.BenchmarkConfig, _ *datagen.Meta) error {
-	b.db = db
-	b.writeOpts = writeOpts
+func (b *Write) Setup(database db.DB, sync bool, cfg *config.BenchmarkConfig, _ *datagen.Meta) error {
+	b.db = database
+	b.sync = sync
 	b.batchSize = cfg.BatchSize
 	b.valueSize = cfg.ValueSize
 	if b.batchSize < 1 {
@@ -47,14 +47,14 @@ func (b *Write) Run(ctx context.Context, workerID int, hist *metrics.NamedHistog
 			_ = i
 			key := datagen.RandomValue(rng, 32)
 			val := datagen.RandomValue(rng, b.valueSize)
-			if err := batch.Set(key, val, nil); err != nil {
+			if err := batch.Set(key, val); err != nil {
 				batch.Close()
 				return err
 			}
 		}
 
 		start := time.Now()
-		err := batch.Commit(b.writeOpts)
+		err := batch.Commit(b.sync)
 		elapsed := time.Since(start)
 		batch.Close()
 

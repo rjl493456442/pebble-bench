@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/cockroachdb/pebble"
+	"github.com/rjl493456442/pebble-bench/db"
 	"github.com/rjl493456442/pebble-bench/metrics"
 )
 
@@ -22,10 +22,10 @@ type progressPoint struct {
 
 // Populate fills the database to approximately the target size.
 // If existing is non-nil, population resumes from the existing key count.
-func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize int, writeOpts *pebble.WriteOptions, existing *Meta) (*Meta, error) {
+func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize int, sync bool, existing *Meta) (*Meta, error) {
 	// Check current size
-	m := db.Metrics()
-	currentSize := int64(m.DiskSpaceUsage())
+	m := database.Metrics()
+	currentSize := int64(m.DiskSpaceUsage)
 	if currentSize >= targetBytes {
 		log.Printf("Database already at %s (target %s), skipping population",
 			formatBytes(currentSize), formatBytes(targetBytes))
@@ -56,19 +56,19 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 		points      []progressPoint
 	)
 	for {
-		batch := db.NewBatch()
+		batch := database.NewBatch()
 		for i := 0; i < batchSize; i++ {
 			key := KeyForIndex(totalKeys)
 			val := RandomValue(rng, valueSize)
 
-			if err := batch.Set(key, val, nil); err != nil {
+			if err := batch.Set(key, val); err != nil {
 				batch.Close()
 				return nil, fmt.Errorf("batch set: %w", err)
 			}
 			totalKeys++
 			newKeys++
 		}
-		if err := batch.Commit(writeOpts); err != nil {
+		if err := batch.Commit(sync); err != nil {
 			batch.Close()
 			return nil, fmt.Errorf("batch commit: %w", err)
 		}
@@ -77,8 +77,8 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 		// Periodic progress check
 		if time.Since(lastLog) > 10*time.Second {
 			now := time.Now()
-			m = db.Metrics()
-			currentSize = int64(m.DiskSpaceUsage())
+			m = database.Metrics()
+			currentSize = int64(m.DiskSpaceUsage)
 
 			intervalKeys := newKeys - lastLogKeys
 			intervalSec := now.Sub(lastLog).Seconds()
@@ -107,20 +107,20 @@ func Populate(db *pebble.DB, targetBytes int64, keySize, valueSize, batchSize in
 
 		// Fast estimation check every 10K batches
 		if totalKeys%(uint64(batchSize)*10) == 0 {
-			m = db.Metrics()
-			if int64(m.DiskSpaceUsage()) >= targetBytes {
+			m = database.Metrics()
+			if int64(m.DiskSpaceUsage) >= targetBytes {
 				break
 			}
 		}
 	}
 
 	// Flush to ensure all data is on disk
-	if err := db.Flush(); err != nil {
+	if err := database.Flush(); err != nil {
 		return nil, fmt.Errorf("flushing database: %w", err)
 	}
 
-	m = db.Metrics()
-	finalSize := int64(m.DiskSpaceUsage())
+	m = database.Metrics()
+	finalSize := int64(m.DiskSpaceUsage)
 	elapsed := time.Since(startTime)
 	overallRate := float64(newKeys) / elapsed.Seconds()
 

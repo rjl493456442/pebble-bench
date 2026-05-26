@@ -30,11 +30,15 @@ var (
 		Name:  "log-file",
 		Usage: "write log output to file (in addition to stderr)",
 	}
+	pebbleV2Flag = &cli.BoolFlag{
+		Name:  "pebblev2",
+		Usage: "run benchmarks against Pebble v2 instead of v1",
+	}
 )
 
 // sharedFlags returns the flags common to all subcommands.
 func sharedFlags() []cli.Flag {
-	return []cli.Flag{configFlag, overrideFlag, dataDirFlag, logFileFlag}
+	return []cli.Flag{configFlag, overrideFlag, dataDirFlag, logFileFlag, pebbleV2Flag}
 }
 
 // App returns the CLI application.
@@ -90,6 +94,12 @@ func loadConfig(c *cli.Context) (*config.BenchConfig, error) {
 	// Apply --data-dir flag
 	if dataDir := c.String(dataDirFlag.Name); dataDir != "" {
 		cfg.DataDir = dataDir
+	}
+
+	// Apply --pebblev2 flag. Only override the config value when the flag was
+	// explicitly provided so a config file can still enable v2 on its own.
+	if c.IsSet(pebbleV2Flag.Name) {
+		cfg.PebbleV2 = c.Bool(pebbleV2Flag.Name)
 	}
 
 	if err := cfg.Validate(); err != nil {

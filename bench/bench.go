@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/rjl493456442/pebble-bench/config"
 	"github.com/rjl493456442/pebble-bench/datagen"
+	"github.com/rjl493456442/pebble-bench/db"
 	"github.com/rjl493456442/pebble-bench/metrics"
 )
 
@@ -20,8 +20,9 @@ type Benchmark interface {
 	// Name returns the benchmark name.
 	Name() string
 
-	// Setup initializes the benchmark state.
-	Setup(db *pebble.DB, writeOpts *pebble.WriteOptions, cfg *config.BenchmarkConfig, meta *datagen.Meta) error
+	// Setup initializes the benchmark state. sync reports whether writes should
+	// be committed synchronously.
+	Setup(database db.DB, sync bool, cfg *config.BenchmarkConfig, meta *datagen.Meta) error
 
 	// Run executes the benchmark workload in a single worker goroutine.
 	// It should loop until ctx is cancelled, recording latencies to hist.
@@ -37,7 +38,7 @@ var Registry = map[string]func() Benchmark{
 }
 
 // Execute runs a benchmark with the given configuration.
-func Execute(db *pebble.DB, writeOpts *pebble.WriteOptions, cfg *config.BenchConfig, meta *datagen.Meta, collector *metrics.Collector) (*metrics.Result, error) {
+func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *datagen.Meta, collector *metrics.Collector) (*metrics.Result, error) {
 	benchCfg := cfg.Benchmark
 	constructor, ok := Registry[benchCfg.Name]
 	if !ok {
@@ -46,7 +47,7 @@ func Execute(db *pebble.DB, writeOpts *pebble.WriteOptions, cfg *config.BenchCon
 
 	// Construct the benchmark
 	b := constructor()
-	if err := b.Setup(db, writeOpts, &benchCfg, meta); err != nil {
+	if err := b.Setup(database, syncWrites, &benchCfg, meta); err != nil {
 		return nil, fmt.Errorf("setup: %w", err)
 	}
 

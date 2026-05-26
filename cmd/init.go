@@ -87,13 +87,13 @@ func runInit(c *cli.Context) error {
 
 	flushTracker := metrics.NewFlushTracker()
 	writeStallTracker := metrics.NewWriteStallTracker()
-	database, writeOpts, cleanup, err := db.OpenForInit(cfg, flushTracker, writeStallTracker)
+	database, sync, cleanup, err := db.OpenForInit(cfg, flushTracker, writeStallTracker)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, writeOpts, existing)
+	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, sync, existing)
 	if err != nil {
 		return err
 	}

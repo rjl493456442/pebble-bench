@@ -40,6 +40,12 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 			return err
 		}
 		cfg.Handles = v
+	case "pebble_v2":
+		v, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		cfg.PebbleV2 = v
 
 	// MemTable settings
 	case "mem_table_size":
@@ -190,7 +196,7 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 // ListOverrideKeys returns all supported override keys for help text.
 func ListOverrideKeys() []string {
 	return []string{
-		"data_dir", "cache_mb", "max_open_files",
+		"data_dir", "cache_mb", "max_open_files", "pebble_v2",
 		"mem_table_size", "mem_table_count", "mem_table_stop_writes_threshold",
 		"max_concurrent_compactions", "l0_compaction_threshold",
 		"l0_stop_writes_threshold", "l0_compaction_concurrency",

@@ -121,7 +121,7 @@ func runBenchmark(c *cli.Context) error {
 	// Open database
 	flushTracker := metrics.NewFlushTracker()
 	writeStallTracker := metrics.NewWriteStallTracker()
-	database, writeOpts, cleanup, err := db.Open(cfg, flushTracker, writeStallTracker)
+	database, sync, cleanup, err := db.Open(cfg, flushTracker, writeStallTracker)
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func runBenchmark(c *cli.Context) error {
 	collector := metrics.NewCollector(database, 3*time.Second, flushTracker, writeStallTracker)
 
 	// Execute benchmark
-	result, err := bench.Execute(database, writeOpts, cfg, meta, collector)
+	result, err := bench.Execute(database, sync, cfg, meta, collector)
 	if err != nil {
 		return err
 	}
