@@ -39,8 +39,10 @@ func (m *Mixed) Setup(database db.DB, sync bool, cfg *config.BenchmarkConfig, me
 	return nil
 }
 
-func (m *Mixed) Run(ctx context.Context, workerID int, hist *metrics.NamedHistogram) error {
+func (m *Mixed) Run(ctx context.Context, workerID int, reg *metrics.HistogramRegistry) error {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+	readHist := reg.Get("read")
+	writeHist := reg.Get("write")
 
 	for {
 		select {
@@ -66,7 +68,7 @@ func (m *Mixed) Run(ctx context.Context, workerID int, hist *metrics.NamedHistog
 				return err
 			}
 			closer.Close()
-			hist.Record(elapsed)
+			readHist.Record(elapsed)
 		} else {
 			batch := m.db.NewBatch()
 			for range m.batchSize {
@@ -86,7 +88,7 @@ func (m *Mixed) Run(ctx context.Context, workerID int, hist *metrics.NamedHistog
 			if err != nil {
 				return err
 			}
-			hist.Record(elapsed)
+			writeHist.Record(elapsed)
 		}
 
 		if !IncrementOps(ctx) {

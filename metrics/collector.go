@@ -12,6 +12,10 @@ type PebbleSnapshot struct {
 	Timestamp         time.Time
 	DiskUsage         uint64
 	ReadAmplification int
+	WriteAmp          float64
+	BytesWritten      uint64
+	BytesRead         uint64
+	BytesIn           uint64
 	CompactionCount   int64
 	CompactionDebt    uint64
 	CompactionsActive int64
@@ -70,7 +74,11 @@ func (c *Collector) capture() {
 	snap := PebbleSnapshot{
 		Timestamp:         time.Now(),
 		DiskUsage:         m.DiskSpaceUsage,
-		ReadAmplification: m.ReadAmplification,
+		ReadAmplification: m.ReadAmp,
+		WriteAmp:          m.WriteAmp,
+		BytesWritten:      m.BytesWritten,
+		BytesRead:         m.BytesRead,
+		BytesIn:           m.BytesIn,
 		CompactionCount:   m.CompactionCount,
 		CompactionDebt:    m.CompactionDebt,
 		CompactionsActive: m.CompactionsActive,
@@ -103,6 +111,35 @@ func (c *Collector) Latest() PebbleSnapshot {
 	return c.snapshots[len(c.snapshots)-1]
 }
 
+// AvgReadAmp returns the mean read amplification across all captured snapshots.
+// Unlike the final snapshot, this reflects the read amplification sustained over
+// the whole run (matching how Pebble's own ycsb benchmark reports r-amp).
+func (c *Collector) AvgReadAmp() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.snapshots) == 0 {
+		return 0
+	}
+	var sum int
+	for _, s := range c.snapshots {
+		sum += s.ReadAmplification
+	}
+	return float64(sum) / float64(len(c.snapshots))
+}
+
+// MaxReadAmp returns the peak read amplification observed during the run.
+func (c *Collector) MaxReadAmp() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var maxAmp int
+	for _, s := range c.snapshots {
+		if s.ReadAmplification > maxAmp {
+			maxAmp = s.ReadAmplification
+		}
+	}
+	return maxAmp
+}
+
 // All returns all captured snapshots.
 func (c *Collector) All() []PebbleSnapshot {
 	c.mu.Lock()
@@ -118,9 +155,10 @@ func (c *Collector) LogLatest() {
 	if snap.Timestamp.IsZero() {
 		return
 	}
-	log.Printf("Pebble: disk=%s read-amp=%d compactions=%d(active=%d) debt=%s memtable=%s(%d) flushes=%d(avg=%s) stalls=%d(total=%s) bcache=%d/%d tcache=%d/%d filter=%d/%d",
+	log.Printf("Pebble: disk=%s read-amp=%d write-amp=%.2f compactions=%d(active=%d) debt=%s memtable=%s(%d) flushes=%d(avg=%s) stalls=%d(total=%s) bcache=%d/%d tcache=%d/%d filter=%d/%d",
 		FormatSize(snap.DiskUsage),
 		snap.ReadAmplification,
+		snap.WriteAmp,
 		snap.CompactionCount,
 		snap.CompactionsActive,
 		FormatSize(snap.CompactionDebt),

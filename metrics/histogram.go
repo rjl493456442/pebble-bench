@@ -27,14 +27,82 @@ type NamedHistogram struct {
 
 // NewNamedHistogram creates a new named histogram.
 func NewNamedHistogram(name string) *NamedHistogram {
-	now := time.Now()
+	return newNamedHistogramAt(name, time.Now())
+}
+
+// newNamedHistogramAt creates a named histogram whose elapsed time is measured
+// from the given start, so several histograms in a registry share one origin.
+func newNamedHistogramAt(name string, start time.Time) *NamedHistogram {
 	return &NamedHistogram{
 		name:       name,
 		hist:       hdrhistogram.New(minLatency.Nanoseconds(), maxLatency.Nanoseconds(), sigFigs),
 		cumulative: hdrhistogram.New(minLatency.Nanoseconds(), maxLatency.Nanoseconds(), sigFigs),
-		startTime:  now,
-		lastTick:   now,
+		startTime:  start,
+		lastTick:   start,
 	}
+}
+
+// HistogramRegistry holds a set of named latency histograms, one per operation
+// type (e.g. "read" and "write" for the mixed benchmark). Histograms are created
+// lazily on first use and all share a common start time.
+type HistogramRegistry struct {
+	start  time.Time
+	mu     sync.Mutex
+	names  []string
+	byName map[string]*NamedHistogram
+}
+
+// NewHistogramRegistry creates an empty registry.
+func NewHistogramRegistry() *HistogramRegistry {
+	return &HistogramRegistry{
+		start:  time.Now(),
+		byName: make(map[string]*NamedHistogram),
+	}
+}
+
+// Get returns the histogram for the named operation, creating it on first use.
+// It is safe to call concurrently from multiple worker goroutines.
+func (r *HistogramRegistry) Get(name string) *NamedHistogram {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h, ok := r.byName[name]
+	if !ok {
+		h = newNamedHistogramAt(name, r.start)
+		r.byName[name] = h
+		r.names = append(r.names, name)
+	}
+	return h
+}
+
+// Tick snapshots every registered histogram (in registration order) and returns
+// their ticks.
+func (r *HistogramRegistry) Tick() []HistogramTick {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ticks := make([]HistogramTick, 0, len(r.names))
+	for _, n := range r.names {
+		ticks = append(ticks, r.byName[n].Tick())
+	}
+	return ticks
+}
+
+// MergeTicks merges several per-operation ticks into a single aggregate tick
+// (used to produce the combined "total" line and time series).
+func MergeTicks(ticks []HistogramTick, name string) HistogramTick {
+	merged := HistogramTick{
+		Name:       name,
+		Hist:       hdrhistogram.New(minLatency.Nanoseconds(), maxLatency.Nanoseconds(), sigFigs),
+		Cumulative: hdrhistogram.New(minLatency.Nanoseconds(), maxLatency.Nanoseconds(), sigFigs),
+	}
+	for i, t := range ticks {
+		if i == 0 {
+			merged.Elapsed = t.Elapsed
+			merged.Interval = t.Interval
+		}
+		merged.Hist.Merge(t.Hist)
+		merged.Cumulative.Merge(t.Cumulative)
+	}
+	return merged
 }
 
 // Record records a latency sample.
@@ -116,4 +184,26 @@ func PrintTick(w io.Writer, tick HistogramTick) {
 
 func nsToMs(ns int64) float64 {
 	return float64(ns) / float64(time.Millisecond)
+}
+
+// BuildSummary derives a Summary from a cumulative histogram over the given
+// elapsed run time. OpsPerSecMin/Max are left zero; the caller fills those for
+// the aggregate summary from the per-interval tick records.
+func BuildSummary(h *hdrhistogram.Histogram, elapsed time.Duration) Summary {
+	us := int64(time.Microsecond)
+	s := Summary{
+		TotalOps: h.TotalCount(),
+		AvgUs:    int64(h.Mean()) / us,
+		MinUs:    h.Min() / us,
+		P50Us:    h.ValueAtPercentile(50) / us,
+		P95Us:    h.ValueAtPercentile(95) / us,
+		P99Us:    h.ValueAtPercentile(99) / us,
+		P999Us:   h.ValueAtPercentile(99.9) / us,
+		MaxUs:    h.Max() / us,
+		StdDevUs: int64(h.StdDev()) / us,
+	}
+	if elapsed > 0 {
+		s.OpsPerSec = float64(h.TotalCount()) / elapsed.Seconds()
+	}
+	return s
 }

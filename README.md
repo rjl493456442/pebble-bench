@@ -151,3 +151,21 @@ percentiles (p50/p95/p99/p99.9), and a final snapshot of Pebble metrics. During
 the run it logs periodic ticks (every 3s) with interval throughput and live
 Pebble stats. Use `--output-file` with `--output json|markdown` to persist
 results for later comparison.
+
+### Key performance indicators
+
+The summary reports the metrics most useful for comparing engines/versions
+(modeled on Pebble's own `bench ycsb` output):
+
+- **Ops/sec** — overall throughput.
+- **Latency percentiles** — especially **p99 / p99.9 / max** (tail latency,
+  where write stalls and compaction interference show up). For the `mixed`
+  benchmark, latency is also broken down **per operation** (read vs write), since
+  their tails differ greatly.
+- **Write Amp** — write amplification = bytes written to disk ÷ logical bytes
+  written. The single most telling metric for LSM compaction efficiency. Shown
+  alongside the raw **Bytes Written / Read / logical-in**.
+- **Read Amp** — reported as `final (avg, max)`, averaged over the whole run
+  rather than just the ending snapshot.
+
+`compare` diffs all of these side by side with percentage deltas.

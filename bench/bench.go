@@ -24,9 +24,10 @@ type Benchmark interface {
 	// be committed synchronously.
 	Setup(database db.DB, sync bool, cfg *config.BenchmarkConfig, meta *datagen.Meta) error
 
-	// Run executes the benchmark workload in a single worker goroutine.
-	// It should loop until ctx is cancelled, recording latencies to hist.
-	Run(ctx context.Context, workerID int, hist *metrics.NamedHistogram) error
+	// Run executes the benchmark workload in a single worker goroutine. It should
+	// loop until ctx is cancelled, recording latencies into the registry's
+	// per-operation histograms (obtained via reg.Get).
+	Run(ctx context.Context, workerID int, reg *metrics.HistogramRegistry) error
 }
 
 // Registry maps benchmark names to constructor functions.
@@ -69,7 +70,7 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 	var (
 		wg        sync.WaitGroup
 		startTime = time.Now()
-		hist      = metrics.NewNamedHistogram(b.Name())
+		reg       = metrics.NewHistogramRegistry()
 		opsCount  atomic.Int64
 		maxOps    = int64(benchCfg.NumOps)
 	)
@@ -93,7 +94,7 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 					cancel: cancel,
 				})
 			}
-			if err := b.Run(wrappedCtx, workerID, hist); err != nil && ctx.Err() == nil {
+			if err := b.Run(wrappedCtx, workerID, reg); err != nil && ctx.Err() == nil {
 				log.Printf("Worker %d error: %v", workerID, err)
 			}
 		}(i)
@@ -112,8 +113,16 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				t := hist.Tick()
-				metrics.PrintTick(os.Stdout, t)
+				ticks := reg.Tick()
+				for _, ot := range ticks {
+					metrics.PrintTick(os.Stdout, ot)
+				}
+				// Combine per-operation ticks into a single total for the chart
+				// (and print it too when there is more than one op type).
+				t := metrics.MergeTicks(ticks, "total")
+				if len(ticks) > 1 {
+					metrics.PrintTick(os.Stdout, t)
+				}
 				if t.Hist.TotalCount() > 0 {
 					tickMu.Lock()
 					tickRecords = append(tickRecords, metrics.TickRecord{
@@ -133,30 +142,36 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 	elapsed := time.Since(startTime)
 	collectorCancel()
 
-	// Final tick to capture remaining data
-	t := hist.Tick()
-	cum := t.Cumulative
+	// Final tick to capture remaining data, per operation type.
+	finalTicks := reg.Tick()
+	total := metrics.MergeTicks(finalTicks, "total")
+
+	// Per-operation summaries (only meaningful when a benchmark mixes ops).
+	var opSummaries []metrics.OpSummary
+	if len(finalTicks) > 1 {
+		for _, ot := range finalTicks {
+			opSummaries = append(opSummaries, metrics.OpSummary{
+				Name:    ot.Name,
+				Summary: metrics.BuildSummary(ot.Cumulative, elapsed),
+			})
+		}
+	}
 
 	// Build result
 	tickMu.Lock()
 	result := &metrics.Result{
-		Config:      cfg,
+		Config: &metrics.RunConfig{
+			Pebble:    database.ResolvedConfig(),
+			Benchmark: cfg.Benchmark,
+		},
 		Benchmark:   b.Name(),
 		Duration:    elapsed,
 		PebbleFinal: collector.Latest(),
+		ReadAmpAvg:  collector.AvgReadAmp(),
+		ReadAmpMax:  collector.MaxReadAmp(),
 		Ticks:       tickRecords,
-		Summary: metrics.Summary{
-			TotalOps:  cum.TotalCount(),
-			OpsPerSec: float64(cum.TotalCount()) / elapsed.Seconds(),
-			AvgUs:     int64(cum.Mean()) / int64(time.Microsecond),
-			MinUs:     cum.Min() / int64(time.Microsecond),
-			P50Us:     cum.ValueAtPercentile(50) / int64(time.Microsecond),
-			P95Us:     cum.ValueAtPercentile(95) / int64(time.Microsecond),
-			P99Us:     cum.ValueAtPercentile(99) / int64(time.Microsecond),
-			P999Us:    cum.ValueAtPercentile(99.9) / int64(time.Microsecond),
-			MaxUs:     cum.Max() / int64(time.Microsecond),
-			StdDevUs:  int64(cum.StdDev()) / int64(time.Microsecond),
-		},
+		OpSummaries: opSummaries,
+		Summary:     metrics.BuildSummary(total.Cumulative, elapsed),
 	}
 
 	// Compute ops/sec min/max from tick records

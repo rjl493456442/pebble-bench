@@ -16,18 +16,6 @@ import (
 
 const v2MaxMemTableSize = 512 << 20 // 512MB
 
-// v2DefaultLevelTargetSizes mirrors the go-ethereum default per-level target
-// file sizes used by the v1 builder: 7 levels doubling from 2MB to 128MB.
-var v2DefaultLevelTargetSizes = [7]int64{
-	2 << 20,   // 2MB
-	4 << 20,   // 4MB
-	8 << 20,   // 8MB
-	16 << 20,  // 16MB
-	32 << 20,  // 32MB
-	64 << 20,  // 64MB
-	128 << 20, // 128MB
-}
-
 // openV2 opens a Pebble v2 database and wraps it in the version-agnostic DB
 // interface.
 func openV2(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) (DB, func(), error) {
@@ -40,6 +28,11 @@ func openV2(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeSt
 		cacheCleanup()
 		return nil, nil, fmt.Errorf("opening pebble v2 database: %w", err)
 	}
+	// Unlike v1, v2's Open clones the options before applying defaults, so our
+	// pointer is left untouched. Apply defaults ourselves (idempotent) to read
+	// back the effective per-level configuration.
+	opts.EnsureDefaults()
+	resolved := resolveV2Config(cfg, opts)
 
 	cleanup := func() {
 		if err := database.Close(); err != nil {
@@ -47,7 +40,59 @@ func openV2(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeSt
 		}
 		cacheCleanup()
 	}
-	return &v2DB{db: database}, cleanup, nil
+	return &v2DB{db: database, resolved: resolved}, cleanup, nil
+}
+
+// resolveV2Config reads the effective configuration back from the (defaults-
+// applied) v2 options.
+func resolveV2Config(cfg *config.BenchConfig, opts *pebble.Options) *metrics.ResolvedConfig {
+	rc := &metrics.ResolvedConfig{
+		PebbleVersion:               "v2",
+		DataDir:                     cfg.DataDir,
+		CacheMB:                     cfg.CacheMB,
+		MaxOpenFiles:                opts.MaxOpenFiles,
+		ReadOnly:                    opts.ReadOnly,
+		NoSync:                      cfg.GetNoSync(),
+		DisableWAL:                  opts.DisableWAL,
+		MemTableSize:                opts.MemTableSize,
+		MemTableStopWritesThreshold: opts.MemTableStopWritesThreshold,
+		L0CompactionThreshold:       opts.L0CompactionThreshold,
+		L0StopWritesThreshold:       opts.L0StopWritesThreshold,
+		L0CompactionConcurrency:     opts.Experimental.L0CompactionConcurrency,
+		CompactionDebtConcurrency:   opts.Experimental.CompactionDebtConcurrency,
+		ReadSamplingMultiplier:      opts.Experimental.ReadSamplingMultiplier,
+		BytesPerSync:                opts.BytesPerSync,
+		WALBytesPerSync:             opts.WALBytesPerSync,
+	}
+	if opts.CompactionConcurrencyRange != nil {
+		// Record the upper bound, comparable to v1's MaxConcurrentCompactions.
+		_, upper := opts.CompactionConcurrencyRange()
+		rc.MaxConcurrentCompactions = upper
+	}
+	for i := range opts.Levels {
+		l := &opts.Levels[i]
+		filter := "none"
+		if fp, ok := l.FilterPolicy.(bloom.FilterPolicy); ok {
+			filter = fmt.Sprintf("bloom(%d)", int(fp))
+		} else if l.FilterPolicy != nil {
+			filter = "set"
+		}
+		compression := "default"
+		if l.Compression != nil {
+			compression = normalizeCompression(l.Compression().Name)
+		}
+		rc.Levels = append(rc.Levels, metrics.ResolvedLevel{
+			Level:                i,
+			TargetFileSize:       opts.TargetFileSizes[i],
+			Compression:          compression,
+			BlockSize:            l.BlockSize,
+			BlockRestartInterval: l.BlockRestartInterval,
+			BlockSizeThreshold:   l.BlockSizeThreshold,
+			IndexBlockSize:       l.IndexBlockSize,
+			FilterPolicy:         filter,
+		})
+	}
+	return rc
 }
 
 // buildV2Options translates a BenchConfig into pebble/v2 Options. It mirrors
@@ -191,7 +236,7 @@ func buildV2Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 func buildV2LevelOptions(opts *pebble.Options, overrides []config.LevelConfig, bloomBits int) {
 	n := len(opts.Levels)
 	for i := 0; i < n; i++ {
-		opts.TargetFileSizes[i] = v2DefaultLevelTargetSizes[i]
+		opts.TargetFileSizes[i] = defaultLevelTargetSizes[i]
 		// Apply the bloom filter on every level except the last by default.
 		if bloomBits > 0 && i < n-1 {
 			opts.Levels[i].FilterPolicy = bloom.FilterPolicy(bloomBits)
@@ -201,6 +246,13 @@ func buildV2LevelOptions(opts *pebble.Options, overrides []config.LevelConfig, b
 				opts.TargetFileSizes[i] = overrides[i].TargetFileSize
 			}
 			applyV2LevelConfig(&opts.Levels[i], overrides[i])
+		}
+		// v1 defaults every unspecified level to snappy independently, whereas
+		// v2 would otherwise inherit the previous level's compression. Pin
+		// snappy here so the same config yields the same effective compression
+		// on both backends (keeping v1/v2 comparisons fair).
+		if opts.Levels[i].Compression == nil {
+			opts.Levels[i].Compression = func() *sstable.CompressionProfile { return sstable.SnappyCompression }
 		}
 	}
 }
@@ -291,8 +343,11 @@ func newV2Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metric
 
 // v2DB adapts *pebble.DB (v2) to the DB interface.
 type v2DB struct {
-	db *pebble.DB
+	db       *pebble.DB
+	resolved *metrics.ResolvedConfig
 }
+
+func (d *v2DB) ResolvedConfig() *metrics.ResolvedConfig { return d.resolved }
 
 func (d *v2DB) NewBatch() Batch { return &v2Batch{batch: d.db.NewBatch()} }
 
@@ -318,9 +373,15 @@ func (d *v2DB) Close() error { return d.db.Close() }
 
 func (d *v2DB) Metrics() *metrics.DBMetrics {
 	m := d.db.Metrics()
+	total := m.Total()
 	out := &metrics.DBMetrics{
-		DiskSpaceUsage:    m.DiskSpaceUsage(),
-		ReadAmplification: int(m.ReadAmp()),
+		DiskSpaceUsage: m.DiskSpaceUsage(),
+		ReadAmp:        int(m.ReadAmp()),
+		WriteAmp:       total.WriteAmp(),
+		// v2 tracks sstable and blob bytes separately.
+		BytesWritten:      total.TableBytesFlushed + total.TableBytesCompacted + total.BlobBytesFlushed + total.BlobBytesCompacted,
+		BytesRead:         total.TableBytesRead,
+		BytesIn:           total.TableBytesIn,
 		CompactionCount:   m.Compact.Count,
 		CompactionDebt:    m.Compact.EstimatedDebt,
 		CompactionsActive: m.Compact.NumInProgress,

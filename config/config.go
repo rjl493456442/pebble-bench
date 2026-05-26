@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -170,7 +171,7 @@ func LoadConfig(path string) (*BenchConfig, error) {
 // error encountered.
 func (c *BenchConfig) Validate() error {
 	for i, l := range c.Levels {
-		if _, ok := parseCompression(l.Compression); !ok {
+		if !validCompression(l.Compression) {
 			return fmt.Errorf("levels[%d]: invalid compression %q (want one of: default, none, snappy, zstd)", i, l.Compression)
 		}
 		if l.BloomFilterBits != nil && *l.BloomFilterBits < 0 {
@@ -178,6 +179,19 @@ func (c *BenchConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// validCompression reports whether s is a recognised compression name. The
+// actual mapping to a Pebble compression value is version-specific and lives in
+// the db package; here we only validate the user-facing string so the config
+// package stays independent of any Pebble release.
+func validCompression(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "default", "none", "no", "nocompression", "snappy", "zstd":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetMemTableCount returns the configured memtable count or the default.

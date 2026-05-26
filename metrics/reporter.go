@@ -14,8 +14,18 @@ type Result struct {
 	Benchmark   string         `json:"benchmark"`
 	Duration    time.Duration  `json:"duration"`
 	Summary     Summary        `json:"summary"`
+	OpSummaries []OpSummary    `json:"op_summaries,omitempty"`
 	PebbleFinal PebbleSnapshot `json:"pebble_final"`
+	ReadAmpAvg  float64        `json:"read_amp_avg"`
+	ReadAmpMax  int            `json:"read_amp_max"`
 	Ticks       []TickRecord   `json:"ticks,omitempty"`
+}
+
+// OpSummary holds a latency summary for a single operation type (e.g. the
+// "read" and "write" halves of the mixed benchmark).
+type OpSummary struct {
+	Name    string  `json:"name"`
+	Summary Summary `json:"summary"`
 }
 
 // Summary contains aggregated benchmark statistics.
@@ -59,10 +69,27 @@ func PrintSummary(r *Result) {
 	fmt.Printf("  p99.9:  %s\n", usToStr(r.Summary.P999Us))
 	fmt.Printf("  max:    %s\n", usToStr(r.Summary.MaxUs))
 	fmt.Printf("  stddev: %s\n", usToStr(r.Summary.StdDevUs))
+
+	// Per-operation breakdown (e.g. read vs write for the mixed benchmark).
+	if len(r.OpSummaries) > 1 {
+		fmt.Println()
+		fmt.Println("Latency by operation:")
+		for _, op := range r.OpSummaries {
+			fmt.Printf("  %-6s ops=%d  ops/sec=%.0f  p50=%s  p99=%s  p99.9=%s  max=%s\n",
+				op.Name+":", op.Summary.TotalOps, op.Summary.OpsPerSec,
+				usToStr(op.Summary.P50Us), usToStr(op.Summary.P99Us),
+				usToStr(op.Summary.P999Us), usToStr(op.Summary.MaxUs))
+		}
+	}
+
 	fmt.Println()
 	fmt.Println("Pebble Metrics:")
 	fmt.Printf("  Disk Usage:      %s\n", FormatSize(r.PebbleFinal.DiskUsage))
-	fmt.Printf("  Read Amp:        %d\n", r.PebbleFinal.ReadAmplification)
+	fmt.Printf("  Write Amp:       %.2f\n", r.PebbleFinal.WriteAmp)
+	fmt.Printf("  Bytes Written:   %s (read %s, logical-in %s)\n",
+		FormatSize(r.PebbleFinal.BytesWritten), FormatSize(r.PebbleFinal.BytesRead), FormatSize(r.PebbleFinal.BytesIn))
+	fmt.Printf("  Read Amp:        %d (avg %.1f, max %d)\n",
+		r.PebbleFinal.ReadAmplification, r.ReadAmpAvg, r.ReadAmpMax)
 	fmt.Printf("  Compactions:     %d\n", r.PebbleFinal.CompactionCount)
 	fmt.Printf("  Flushes:         %d\n", r.PebbleFinal.FlushStats.Count)
 	if r.PebbleFinal.FlushStats.Count > 0 {
@@ -139,12 +166,30 @@ func WriteMarkdown(path string, r *Result) error {
 	b.WriteString(fmt.Sprintf("| max | %s |\n", usToStr(r.Summary.MaxUs)))
 	b.WriteString(fmt.Sprintf("| stddev | %s |\n", usToStr(r.Summary.StdDevUs)))
 
+	// Per-operation latency breakdown
+	if len(r.OpSummaries) > 1 {
+		b.WriteString("\n## Latency by Operation\n\n")
+		b.WriteString("| Operation | Ops | Ops/sec | p50 | p99 | p99.9 | max |\n")
+		b.WriteString("|-----------|-----|---------|-----|-----|-------|-----|\n")
+		for _, op := range r.OpSummaries {
+			b.WriteString(fmt.Sprintf("| %s | %d | %.0f | %s | %s | %s | %s |\n",
+				op.Name, op.Summary.TotalOps, op.Summary.OpsPerSec,
+				usToStr(op.Summary.P50Us), usToStr(op.Summary.P99Us),
+				usToStr(op.Summary.P999Us), usToStr(op.Summary.MaxUs)))
+		}
+	}
+
 	// Pebble metrics
 	b.WriteString("\n## Pebble Metrics\n\n")
 	b.WriteString("| Metric | Value |\n")
 	b.WriteString("|--------|-------|\n")
 	b.WriteString(fmt.Sprintf("| Disk Usage | %s |\n", FormatSize(r.PebbleFinal.DiskUsage)))
-	b.WriteString(fmt.Sprintf("| Read Amplification | %d |\n", r.PebbleFinal.ReadAmplification))
+	b.WriteString(fmt.Sprintf("| Write Amplification | %.2f |\n", r.PebbleFinal.WriteAmp))
+	b.WriteString(fmt.Sprintf("| Bytes Written | %s |\n", FormatSize(r.PebbleFinal.BytesWritten)))
+	b.WriteString(fmt.Sprintf("| Bytes Read (compaction) | %s |\n", FormatSize(r.PebbleFinal.BytesRead)))
+	b.WriteString(fmt.Sprintf("| Bytes In (logical) | %s |\n", FormatSize(r.PebbleFinal.BytesIn)))
+	b.WriteString(fmt.Sprintf("| Read Amplification (final) | %d |\n", r.PebbleFinal.ReadAmplification))
+	b.WriteString(fmt.Sprintf("| Read Amplification (avg / max) | %.1f / %d |\n", r.ReadAmpAvg, r.ReadAmpMax))
 	b.WriteString(fmt.Sprintf("| Compactions | %d |\n", r.PebbleFinal.CompactionCount))
 
 	// Flush metrics
@@ -281,9 +326,27 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 	}
 	b.WriteString("\n")
 
-	b.WriteString("| Read Amp |")
+	b.WriteString("| Write Amp |")
+	for _, r := range results {
+		b.WriteString(fmt.Sprintf(" %.2f |", r.PebbleFinal.WriteAmp))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("| Bytes Written |")
+	for _, r := range results {
+		b.WriteString(fmt.Sprintf(" %s |", FormatSize(r.PebbleFinal.BytesWritten)))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("| Read Amp (final) |")
 	for _, r := range results {
 		b.WriteString(fmt.Sprintf(" %d |", r.PebbleFinal.ReadAmplification))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("| Read Amp (avg) |")
+	for _, r := range results {
+		b.WriteString(fmt.Sprintf(" %.1f |", r.ReadAmpAvg))
 	}
 	b.WriteString("\n")
 
@@ -360,7 +423,10 @@ func PrintComparison(baseline, current *Result) {
 	fmt.Println()
 	fmt.Println("Pebble Metrics:")
 	fmt.Printf("%-20s %20s %20s %10s\n", "  Disk Usage", FormatSize(baseline.PebbleFinal.DiskUsage), FormatSize(current.PebbleFinal.DiskUsage), pctDiff(float64(baseline.PebbleFinal.DiskUsage), float64(current.PebbleFinal.DiskUsage)))
-	fmt.Printf("%-20s %20d %20d %10s\n", "  Read Amp", baseline.PebbleFinal.ReadAmplification, current.PebbleFinal.ReadAmplification, pctDiff(float64(baseline.PebbleFinal.ReadAmplification), float64(current.PebbleFinal.ReadAmplification)))
+	fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  Write Amp", baseline.PebbleFinal.WriteAmp, current.PebbleFinal.WriteAmp, pctDiff(baseline.PebbleFinal.WriteAmp, current.PebbleFinal.WriteAmp))
+	fmt.Printf("%-20s %20s %20s %10s\n", "  Bytes Written", FormatSize(baseline.PebbleFinal.BytesWritten), FormatSize(current.PebbleFinal.BytesWritten), pctDiff(float64(baseline.PebbleFinal.BytesWritten), float64(current.PebbleFinal.BytesWritten)))
+	fmt.Printf("%-20s %20d %20d %10s\n", "  Read Amp (final)", baseline.PebbleFinal.ReadAmplification, current.PebbleFinal.ReadAmplification, pctDiff(float64(baseline.PebbleFinal.ReadAmplification), float64(current.PebbleFinal.ReadAmplification)))
+	fmt.Printf("%-20s %20.1f %20.1f %10s\n", "  Read Amp (avg)", baseline.ReadAmpAvg, current.ReadAmpAvg, pctDiff(baseline.ReadAmpAvg, current.ReadAmpAvg))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Compactions", baseline.PebbleFinal.CompactionCount, current.PebbleFinal.CompactionCount, pctDiff(float64(baseline.PebbleFinal.CompactionCount), float64(current.PebbleFinal.CompactionCount)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Flushes", baseline.PebbleFinal.FlushStats.Count, current.PebbleFinal.FlushStats.Count, pctDiff(float64(baseline.PebbleFinal.FlushStats.Count), float64(current.PebbleFinal.FlushStats.Count)))
 	bAvg := float64(baseline.PebbleFinal.FlushStats.AvgTime().Milliseconds())

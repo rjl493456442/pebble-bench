@@ -6,7 +6,11 @@ package metrics
 // tool does not depend on a particular Pebble release.
 type DBMetrics struct {
 	DiskSpaceUsage    uint64
-	ReadAmplification int
+	ReadAmp           int
+	WriteAmp          float64 // total bytes written to disk / logical bytes written
+	BytesWritten      uint64  // actual bytes written to disk (flushed + compacted, incl. blob)
+	BytesRead         uint64  // bytes read during compaction
+	BytesIn           uint64  // logical bytes written by the user (WAL + ingested)
 	CompactionCount   int64
 	CompactionDebt    uint64
 	CompactionsActive int64

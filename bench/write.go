@@ -32,8 +32,9 @@ func (b *Write) Setup(database db.DB, sync bool, cfg *config.BenchmarkConfig, _ 
 	return nil
 }
 
-func (b *Write) Run(ctx context.Context, workerID int, hist *metrics.NamedHistogram) error {
+func (b *Write) Run(ctx context.Context, workerID int, reg *metrics.HistogramRegistry) error {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+	hist := reg.Get("write")
 
 	for {
 		select {

@@ -25,7 +25,8 @@ func (s *Scan) Setup(database db.DB, _ bool, _ *config.BenchmarkConfig, _ *datag
 	return nil
 }
 
-func (s *Scan) Run(ctx context.Context, _ int, hist *metrics.NamedHistogram) error {
+func (s *Scan) Run(ctx context.Context, _ int, reg *metrics.HistogramRegistry) error {
+	hist := reg.Get("scan")
 	iter, err := s.db.NewIter()
 	if err != nil {
 		return err

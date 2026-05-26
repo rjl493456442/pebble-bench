@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rjl493456442/pebble-bench/config"
@@ -36,6 +37,19 @@ func init() {
 	}
 }
 
+// defaultLevelTargetSizes are the go-ethereum default per-level target file
+// sizes shared by both backends: 7 levels with target sizes doubling from 2MB
+// to 128MB.
+var defaultLevelTargetSizes = [7]int64{
+	2 << 20,   // 2MB
+	4 << 20,   // 4MB
+	8 << 20,   // 8MB
+	16 << 20,  // 16MB
+	32 << 20,  // 32MB
+	64 << 20,  // 64MB
+	128 << 20, // 128MB
+}
+
 // ErrNotFound is returned by DB.Get when the requested key does not exist. Each
 // backend translates its own not-found sentinel into this value so callers can
 // compare against a single, version-independent error.
@@ -59,6 +73,10 @@ type DB interface {
 
 	// Metrics returns a normalized snapshot of the internal metrics.
 	Metrics() *metrics.DBMetrics
+
+	// ResolvedConfig returns the effective configuration actually used, with all
+	// Pebble defaults materialized (for unambiguous result records).
+	ResolvedConfig() *metrics.ResolvedConfig
 
 	// Close closes the database and releases associated resources.
 	Close() error
@@ -84,6 +102,25 @@ type Iterator interface {
 	Valid() bool
 	Error() error
 	Close() error
+}
+
+// normalizeCompression maps a Pebble compression name (which differs slightly
+// between versions, e.g. "Snappy" vs "NoCompression") to the lowercase token
+// used in our config ("none"/"snappy"/"zstd"/"default"), passing through
+// anything unrecognized.
+func normalizeCompression(name string) string {
+	switch strings.ToLower(name) {
+	case "nocompression", "none":
+		return "none"
+	case "snappy":
+		return "snappy"
+	case "zstd", "zstdcompression":
+		return "zstd"
+	case "default", "defaultcompression":
+		return "default"
+	default:
+		return strings.ToLower(name)
+	}
 }
 
 // Open opens a database using the backend selected by cfg.PebbleV2 and returns

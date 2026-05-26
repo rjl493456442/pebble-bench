@@ -1,13 +1,14 @@
-package config
+package db
 
 import (
 	"testing"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/rjl493456442/pebble-bench/config"
 )
 
-func TestBuildLevelOptionsDefaults(t *testing.T) {
-	levels := buildLevelOptions(nil, 10)
+func TestBuildV1LevelOptionsDefaults(t *testing.T) {
+	levels := buildV1LevelOptions(nil, 10)
 	if len(levels) != len(defaultLevelTargetSizes) {
 		t.Fatalf("got %d levels, want %d", len(levels), len(defaultLevelTargetSizes))
 	}
@@ -23,15 +24,15 @@ func TestBuildLevelOptionsDefaults(t *testing.T) {
 	}
 }
 
-func TestBuildLevelOptionsOverlay(t *testing.T) {
+func TestBuildV1LevelOptionsOverlay(t *testing.T) {
 	bits := 0
-	levels := []LevelConfig{
+	levels := []config.LevelConfig{
 		{Compression: "none", BlockSize: 8192}, // L0: tweak some fields, keep default size
 		{},                                     // L1: fully inherit defaults
 		{TargetFileSize: 1 << 30, NoFilter: true},
 		{BloomFilterBits: &bits}, // L3: zero bits disables the filter
 	}
-	opts := buildLevelOptions(levels, 10)
+	opts := buildV1LevelOptions(levels, 10)
 
 	// Number of levels stays at the default count since overrides are fewer.
 	if len(opts) != len(defaultLevelTargetSizes) {
@@ -68,10 +69,10 @@ func TestBuildLevelOptionsOverlay(t *testing.T) {
 	}
 }
 
-func TestBuildLevelOptionsExtraLevels(t *testing.T) {
+func TestBuildV1LevelOptionsExtraLevels(t *testing.T) {
 	// Provide more levels than the defaults.
-	levels := make([]LevelConfig, len(defaultLevelTargetSizes)+2)
-	opts := buildLevelOptions(levels, 10)
+	levels := make([]config.LevelConfig, len(defaultLevelTargetSizes)+2)
+	opts := buildV1LevelOptions(levels, 10)
 	if len(opts) != len(levels) {
 		t.Fatalf("got %d levels, want %d", len(opts), len(levels))
 	}
@@ -84,7 +85,7 @@ func TestBuildLevelOptionsExtraLevels(t *testing.T) {
 	}
 }
 
-func TestParseCompression(t *testing.T) {
+func TestV1Compression(t *testing.T) {
 	cases := map[string]struct {
 		want pebble.Compression
 		ok   bool
@@ -98,9 +99,9 @@ func TestParseCompression(t *testing.T) {
 		"bogus":         {pebble.DefaultCompression, false},
 	}
 	for in, want := range cases {
-		got, ok := parseCompression(in)
+		got, ok := v1Compression(in)
 		if got != want.want || ok != want.ok {
-			t.Errorf("parseCompression(%q) = (%v, %v), want (%v, %v)", in, got, ok, want.want, want.ok)
+			t.Errorf("v1Compression(%q) = (%v, %v), want (%v, %v)", in, got, ok, want.want, want.ok)
 		}
 	}
 }

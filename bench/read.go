@@ -25,8 +25,9 @@ func (r *Read) Setup(database db.DB, _ bool, _ *config.BenchmarkConfig, meta *da
 	return nil
 }
 
-func (r *Read) Run(ctx context.Context, workerID int, hist *metrics.NamedHistogram) error {
+func (r *Read) Run(ctx context.Context, workerID int, reg *metrics.HistogramRegistry) error {
 	rng := rand.New(rand.NewSource(int64(workerID) * 31337))
+	hist := reg.Get("read")
 
 	for {
 		select {
