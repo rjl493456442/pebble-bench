@@ -17,10 +17,11 @@ const v1MaxMemTableSize = 512 << 20 // 512MB
 
 // openV1 opens a Pebble v1 database and wraps it in the version-agnostic DB
 // interface.
-func openV1(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) (DB, func(), error) {
+func openV1(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker) (DB, func(), error) {
 	log.Printf("Opening database with Pebble v1")
 	opts, cacheCleanup := buildV1Options(cfg)
 	opts.EventListener = newV1Listener(flushTracker, writeStallTracker)
+	opts.FS = instrumentV1FS(opts.FS, syncTracker, readTracker)
 
 	database, err := pebble.Open(cfg.DataDir, opts)
 	if err != nil {

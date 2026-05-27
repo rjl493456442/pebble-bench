@@ -167,5 +167,18 @@ The summary reports the metrics most useful for comparing engines/versions
   alongside the raw **Bytes Written / Read / logical-in**.
 - **Read Amp** — reported as `final (avg, max)`, averaged over the whole run
   rather than just the ending snapshot.
+- **Sync calls (VFS)** — counts and avg/max timing of the durability syscalls
+  Pebble issues, broken out as **fsync**, **fdatasync**, and **sync_file_range**.
+  These are measured in-process by instrumenting Pebble's VFS layer (no strace or
+  eBPF needed), so they work the same on Linux and macOS. Note `fdatasync` and
+  `sync_file_range` are Linux-only; on macOS those counts are 0 because Pebble
+  falls back to `fsync` there.
+- **Read calls (VFS)** — counts and avg/max timing of read syscalls, broken out
+  as **pread** (`ReadAt`, the dominant path for sstable block reads) and **read**
+  (`Read`, sequential reads). Measured at the same VFS layer, so the counts only
+  include reads that **miss the block cache and reach the disk** — making `pread`
+  avg a good proxy for the average disk-read latency, especially for the `read`
+  and `scan` benchmarks. (If the dataset fits in the OS page cache, these will be
+  fast page-cache hits rather than device reads.)
 
 `compare` diffs all of these side by side with percentage deltas.

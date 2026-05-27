@@ -106,6 +106,8 @@ func PrintSummary(r *Result) {
 		fmt.Printf("    max:           %s\n", ws.MaxTime.Round(time.Millisecond))
 		fmt.Printf("    total:         %s\n", ws.TotalTime.Round(time.Millisecond))
 	}
+	printSyncStats(r.PebbleFinal.SyncStats)
+	printReadStats(r.PebbleFinal.ReadStats)
 	fmt.Printf("  Block Cache:     %d / %d\n", r.PebbleFinal.BlockCacheHits,
 		r.PebbleFinal.BlockCacheHits+r.PebbleFinal.BlockCacheMisses)
 	fmt.Printf("  Table Cache:     %d / %d\n", r.PebbleFinal.TableCacheHits,
@@ -209,6 +211,32 @@ func WriteMarkdown(path string, r *Result) error {
 		b.WriteString(fmt.Sprintf("| Stall Avg | %s |\n", ws.AvgTime().Round(time.Millisecond)))
 		b.WriteString(fmt.Sprintf("| Stall Max | %s |\n", ws.MaxTime.Round(time.Millisecond)))
 		b.WriteString(fmt.Sprintf("| Stall Total | %s |\n", ws.TotalTime.Round(time.Millisecond)))
+	}
+
+	// Sync-call counts and timings (fsync / fdatasync / sync_file_range).
+	for _, op := range []struct {
+		label string
+		stats IOStat
+	}{
+		{"fsync", r.PebbleFinal.SyncStats.Sync},
+		{"fdatasync", r.PebbleFinal.SyncStats.SyncData},
+		{"sync_file_range", r.PebbleFinal.SyncStats.SyncTo},
+	} {
+		b.WriteString(fmt.Sprintf("| %s (count / avg / max) | %d / %s / %s |\n",
+			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime)))
+	}
+
+	// Read-call counts and timings (pread / read). Counts only reflect reads
+	// that miss the block cache and reach the disk.
+	for _, op := range []struct {
+		label string
+		stats IOStat
+	}{
+		{"pread", r.PebbleFinal.ReadStats.ReadAt},
+		{"read", r.PebbleFinal.ReadStats.Read},
+	} {
+		b.WriteString(fmt.Sprintf("| %s (count / avg / max) | %d / %s / %s |\n",
+			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime)))
 	}
 
 	// Cache and filter stats
@@ -464,6 +492,58 @@ func hitRateStr(hits, misses int64) string {
 	}
 	rate := float64(hits) / float64(total) * 100
 	return fmt.Sprintf("%d / %d (%.1f%%)", hits, total, rate)
+}
+
+// printSyncStats prints the fsync/fdatasync/sync_file_range counts and timings.
+// All three lines are always shown so that a zero count (e.g. fdatasync and
+// sync_file_range on macOS, where they fall back to fsync) is visible rather
+// than silently omitted.
+func printSyncStats(s SyncStats) {
+	fmt.Println("  Sync calls (VFS):")
+	for _, op := range []struct {
+		label string
+		stats IOStat
+	}{
+		{"fsync", s.Sync},
+		{"fdatasync", s.SyncData},
+		{"sync_file_range", s.SyncTo},
+	} {
+		fmt.Printf("    %-16s count=%-8d avg=%-10s max=%s\n",
+			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime))
+	}
+}
+
+// printReadStats prints the read/pread counts and timings. These count only
+// reads that reach the disk (block-cache hits never touch the VFS), so for a
+// read benchmark pread reflects the actual disk-read syscalls and avg is the
+// average read latency. Both lines are always shown.
+func printReadStats(s ReadStats) {
+	fmt.Println("  Read calls (VFS):")
+	for _, op := range []struct {
+		label string
+		stats IOStat
+	}{
+		{"pread", s.ReadAt},
+		{"read", s.Read},
+	} {
+		fmt.Printf("    %-16s count=%-8d avg=%-10s max=%s\n",
+			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime))
+	}
+}
+
+// fmtDur formats a duration with a resolution appropriate to its magnitude,
+// since sync calls are often well under a millisecond.
+func fmtDur(d time.Duration) string {
+	switch {
+	case d == 0:
+		return "0"
+	case d >= time.Second:
+		return d.Round(time.Millisecond).String()
+	case d >= time.Millisecond:
+		return d.Round(10 * time.Microsecond).String()
+	default:
+		return d.Round(time.Microsecond).String()
+	}
 }
 
 func usToStr(us int64) string {

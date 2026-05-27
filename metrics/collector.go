@@ -23,6 +23,8 @@ type PebbleSnapshot struct {
 	MemTableCount     int64
 	FlushStats        FlushStats      `json:"flush_stats"`
 	WriteStallStats   WriteStallStats `json:"write_stall_stats"`
+	SyncStats         SyncStats       `json:"sync_stats"`
+	ReadStats         ReadStats       `json:"read_stats"`
 	BlockCacheHits    int64
 	BlockCacheMisses  int64
 	TableCacheHits    int64
@@ -39,18 +41,22 @@ type Collector struct {
 	interval          time.Duration
 	flushTracker      *FlushTracker
 	writeStallTracker *WriteStallTracker
+	syncTracker       *SyncTracker
+	readTracker       *ReadTracker
 
 	mu        sync.Mutex
 	snapshots []PebbleSnapshot
 }
 
 // NewCollector creates a new metrics collector.
-func NewCollector(src MetricsSource, interval time.Duration, flushTracker *FlushTracker, writeStallTracker *WriteStallTracker) *Collector {
+func NewCollector(src MetricsSource, interval time.Duration, flushTracker *FlushTracker, writeStallTracker *WriteStallTracker, syncTracker *SyncTracker, readTracker *ReadTracker) *Collector {
 	return &Collector{
 		src:               src,
 		interval:          interval,
 		flushTracker:      flushTracker,
 		writeStallTracker: writeStallTracker,
+		syncTracker:       syncTracker,
+		readTracker:       readTracker,
 	}
 }
 
@@ -86,6 +92,8 @@ func (c *Collector) capture() {
 		MemTableCount:     m.MemTableCount,
 		FlushStats:        c.flushTracker.Stats(),
 		WriteStallStats:   c.writeStallTracker.Stats(),
+		SyncStats:         c.syncTracker.Stats(),
+		ReadStats:         c.readTracker.Stats(),
 		BlockCacheHits:    m.BlockCacheHits,
 		BlockCacheMisses:  m.BlockCacheMisses,
 		TableCacheHits:    m.TableCacheHits,

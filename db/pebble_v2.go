@@ -18,10 +18,11 @@ const v2MaxMemTableSize = 512 << 20 // 512MB
 
 // openV2 opens a Pebble v2 database and wraps it in the version-agnostic DB
 // interface.
-func openV2(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) (DB, func(), error) {
+func openV2(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker) (DB, func(), error) {
 	log.Printf("Opening database with Pebble v2")
 	opts, cacheCleanup := buildV2Options(cfg)
 	opts.EventListener = newV2Listener(flushTracker, writeStallTracker)
+	opts.FS = instrumentV2FS(opts.FS, syncTracker, readTracker)
 
 	database, err := pebble.Open(cfg.DataDir, opts)
 	if err != nil {
