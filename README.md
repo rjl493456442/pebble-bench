@@ -167,18 +167,26 @@ The summary reports the metrics most useful for comparing engines/versions
   alongside the raw **Bytes Written / Read / logical-in**.
 - **Read Amp** — reported as `final (avg, max)`, averaged over the whole run
   rather than just the ending snapshot.
-- **Sync calls (VFS)** — counts and avg/max timing of the durability syscalls
-  Pebble issues, broken out as **fsync**, **fdatasync**, and **sync_file_range**.
+- **Write syscalls (VFS)** — counts and avg/max timing of the write-path syscalls
+  Pebble issues, broken out as **fsync**, **fdatasync**, **sync_file_range**, and
+  **fallocate** (`Preallocate`, used by the WAL writer to reserve disk blocks).
   These are measured in-process by instrumenting Pebble's VFS layer (no strace or
-  eBPF needed), so they work the same on Linux and macOS. Note `fdatasync` and
-  `sync_file_range` are Linux-only; on macOS those counts are 0 because Pebble
-  falls back to `fsync` there.
-- **Read calls (VFS)** — counts and avg/max timing of read syscalls, broken out
-  as **pread** (`ReadAt`, the dominant path for sstable block reads) and **read**
-  (`Read`, sequential reads). Measured at the same VFS layer, so the counts only
+  eBPF needed), so they work the same on Linux and macOS. Note `fdatasync`,
+  `sync_file_range`, and `fallocate` only issue a real syscall on Linux; on macOS
+  Pebble falls back (`fdatasync`→`fsync`) or no-ops, so those timings are ~0 even
+  though the call counts are still recorded.
+- **Read syscalls (VFS)** — counts and avg/max timing of read-path syscalls,
+  broken out as **pread** (`ReadAt`, the dominant path for sstable block reads),
+  **read** (`Read`, sequential reads), and **readahead** (`Prefetch`, an async
+  prefetch *hint* issued on sequential access — its timing is the cost of the
+  hint, not read latency). Measured at the same VFS layer, so the counts only
   include reads that **miss the block cache and reach the disk** — making `pread`
   avg a good proxy for the average disk-read latency, especially for the `read`
-  and `scan` benchmarks. (If the dataset fits in the OS page cache, these will be
-  fast page-cache hits rather than device reads.)
+  benchmark. Caveat: for `scan` (and other sequential) workloads, OS readahead
+  pulls data into the page cache asynchronously, so `pread` calls become fast
+  page-cache hits and `pread` avg under-represents true device latency; for
+  random point reads no readahead fires and `pread` avg reflects real device
+  latency. (Likewise, if the whole dataset fits in the page cache, all reads are
+  cache hits regardless of access pattern.)
 
 `compare` diffs all of these side by side with percentage deltas.

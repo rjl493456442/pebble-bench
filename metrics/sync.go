@@ -5,29 +5,37 @@ import (
 	"time"
 )
 
-// SyncOp identifies one of the three durability-related file operations Pebble
-// issues through its VFS layer. Each maps to a distinct syscall on Linux.
+// SyncOp identifies one of the write-path file operations Pebble issues through
+// its VFS layer. Each maps to a distinct syscall on Linux.
 type SyncOp int
 
 const (
 	// OpSync is vfs.File.Sync, backed by fsync(2) (fcntl(F_FULLFSYNC) on macOS).
 	OpSync SyncOp = iota
+
 	// OpSyncData is vfs.File.SyncData, backed by fdatasync(2) on Linux and by
 	// fsync where fdatasync is unavailable.
 	OpSyncData
+
 	// OpSyncTo is vfs.File.SyncTo, backed by sync_file_range(2) on Linux and a
 	// no-op elsewhere.
 	OpSyncTo
 
+	// OpPreallocate is vfs.File.Preallocate, backed by fallocate(2) (with
+	// FALLOC_FL_KEEP_SIZE) on Linux and a no-op elsewhere. Pebble uses it to
+	// reserve disk blocks for the WAL ahead of writing.
+	OpPreallocate
+
 	numSyncOps
 )
 
-// SyncStats is a snapshot of all sync-operation statistics, labelled by the
-// underlying syscall for clarity in reports.
+// SyncStats is a snapshot of all write-path operation statistics, labelled by
+// the underlying syscall for clarity in reports.
 type SyncStats struct {
-	Sync     IOStat `json:"fsync"`
-	SyncData IOStat `json:"fdatasync"`
-	SyncTo   IOStat `json:"sync_file_range"`
+	Sync        IOStat `json:"fsync"`
+	SyncData    IOStat `json:"fdatasync"`
+	SyncTo      IOStat `json:"sync_file_range"`
+	Preallocate IOStat `json:"fallocate"`
 }
 
 // SyncTracker records the count and timing of fsync/fdatasync/sync_file_range
@@ -68,8 +76,9 @@ func (t *SyncTracker) Stats() SyncStats {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return SyncStats{
-		Sync:     t.stats[OpSync],
-		SyncData: t.stats[OpSyncData],
-		SyncTo:   t.stats[OpSyncTo],
+		Sync:        t.stats[OpSync],
+		SyncData:    t.stats[OpSyncData],
+		SyncTo:      t.stats[OpSyncTo],
+		Preallocate: t.stats[OpPreallocate],
 	}
 }

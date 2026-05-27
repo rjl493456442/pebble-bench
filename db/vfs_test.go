@@ -58,6 +58,11 @@ func testVFSInstrumentation(t *testing.T, v2 bool) {
 	if s.Sync.Count == 0 {
 		t.Errorf("expected fsync (Sync) calls from flushing/closing, got 0")
 	}
+	// Preallocate is invoked by Pebble's WAL writer even on platforms where it
+	// is a no-op syscall, so the call count must be non-zero on all platforms.
+	if s.Preallocate.Count == 0 {
+		t.Errorf("expected Preallocate (fallocate) calls from the WAL writer, got 0")
+	}
 
 	// Phase 2: reopen with a cold block cache and read the data back, which must
 	// hit the disk through vfs.File.ReadAt (pread).
@@ -77,9 +82,9 @@ func testVFSInstrumentation(t *testing.T, v2 bool) {
 	cleanup()
 
 	r := readTracker.Stats()
-	t.Logf("v2=%v fsync=%d(avg %s) fdatasync=%d(avg %s) | pread=%d(avg %s) read=%d(avg %s) | scanned=%d",
-		v2, s.Sync.Count, s.Sync.AvgTime(), s.SyncData.Count, s.SyncData.AvgTime(),
-		r.ReadAt.Count, r.ReadAt.AvgTime(), r.Read.Count, r.Read.AvgTime(), count)
+	t.Logf("v2=%v fsync=%d fdatasync=%d fallocate=%d | pread=%d(avg %s) read=%d readahead=%d | scanned=%d",
+		v2, s.Sync.Count, s.SyncData.Count, s.Preallocate.Count,
+		r.ReadAt.Count, r.ReadAt.AvgTime(), r.Read.Count, r.Prefetch.Count, count)
 
 	if count < keys {
 		t.Errorf("expected to scan at least %d keys, got %d", keys, count)

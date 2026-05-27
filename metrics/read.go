@@ -6,27 +6,36 @@ import (
 	"time"
 )
 
-// ReadOp identifies one of the read operations Pebble issues through its VFS
-// layer. Each maps to a distinct syscall.
+// ReadOp identifies one of the read-path operations Pebble issues through its
+// VFS layer. Each maps to a distinct syscall.
 type ReadOp int
 
 const (
 	// OpRead is vfs.File.Read, backed by read(2) (sequential reads, e.g. WAL
 	// replay and manifest loading).
 	OpRead ReadOp = iota
+
 	// OpReadAt is vfs.File.ReadAt, backed by pread(2). This is the dominant path
 	// for sstable block reads that miss the block cache, i.e. real disk reads
 	// during point lookups, scans, and compactions.
 	OpReadAt
 
+	// OpPrefetch is vfs.File.Prefetch, backed by readahead(2) on Linux and a
+	// no-op elsewhere. It is an asynchronous readahead *hint* issued when Pebble
+	// detects sequential access; it does not transfer data itself (the data
+	// still arrives via a subsequent ReadAt), so its timing is the cost of the
+	// hint, not read latency.
+	OpPrefetch
+
 	numReadOps
 )
 
-// ReadStats is a snapshot of all read-operation statistics, labelled by the
-// underlying syscall for clarity in reports.
+// ReadStats is a snapshot of all read-path operation statistics, labelled by
+// the underlying syscall for clarity in reports.
 type ReadStats struct {
-	Read   IOStat `json:"read"`
-	ReadAt IOStat `json:"pread"`
+	Read     IOStat `json:"read"`
+	ReadAt   IOStat `json:"pread"`
+	Prefetch IOStat `json:"readahead"`
 }
 
 // readAccum is the lock-free accumulator for a single read operation type.
@@ -97,7 +106,8 @@ func (t *ReadTracker) Record(op ReadOp, d time.Duration) {
 // Stats returns a snapshot of the current statistics.
 func (t *ReadTracker) Stats() ReadStats {
 	return ReadStats{
-		Read:   t.accum[OpRead].snapshot(),
-		ReadAt: t.accum[OpReadAt].snapshot(),
+		Read:     t.accum[OpRead].snapshot(),
+		ReadAt:   t.accum[OpReadAt].snapshot(),
+		Prefetch: t.accum[OpPrefetch].snapshot(),
 	}
 }

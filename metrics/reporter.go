@@ -221,19 +221,21 @@ func WriteMarkdown(path string, r *Result) error {
 		{"fsync", r.PebbleFinal.SyncStats.Sync},
 		{"fdatasync", r.PebbleFinal.SyncStats.SyncData},
 		{"sync_file_range", r.PebbleFinal.SyncStats.SyncTo},
+		{"fallocate", r.PebbleFinal.SyncStats.Preallocate},
 	} {
 		b.WriteString(fmt.Sprintf("| %s (count / avg / max) | %d / %s / %s |\n",
 			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime)))
 	}
 
-	// Read-call counts and timings (pread / read). Counts only reflect reads
-	// that miss the block cache and reach the disk.
+	// Read-path syscall counts and timings. Counts only reflect reads that miss
+	// the block cache and reach the disk; readahead is an async prefetch hint.
 	for _, op := range []struct {
 		label string
 		stats IOStat
 	}{
 		{"pread", r.PebbleFinal.ReadStats.ReadAt},
 		{"read", r.PebbleFinal.ReadStats.Read},
+		{"readahead (hint)", r.PebbleFinal.ReadStats.Prefetch},
 	} {
 		b.WriteString(fmt.Sprintf("| %s (count / avg / max) | %d / %s / %s |\n",
 			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime)))
@@ -494,12 +496,12 @@ func hitRateStr(hits, misses int64) string {
 	return fmt.Sprintf("%d / %d (%.1f%%)", hits, total, rate)
 }
 
-// printSyncStats prints the fsync/fdatasync/sync_file_range counts and timings.
-// All three lines are always shown so that a zero count (e.g. fdatasync and
-// sync_file_range on macOS, where they fall back to fsync) is visible rather
-// than silently omitted.
+// printSyncStats prints the write-path syscall counts and timings. All lines
+// are always shown so that a zero count (e.g. fdatasync and sync_file_range on
+// macOS, where they fall back to fsync) is visible rather than silently
+// omitted.
 func printSyncStats(s SyncStats) {
-	fmt.Println("  Sync calls (VFS):")
+	fmt.Println("  Write syscalls (VFS):")
 	for _, op := range []struct {
 		label string
 		stats IOStat
@@ -507,24 +509,27 @@ func printSyncStats(s SyncStats) {
 		{"fsync", s.Sync},
 		{"fdatasync", s.SyncData},
 		{"sync_file_range", s.SyncTo},
+		{"fallocate", s.Preallocate},
 	} {
 		fmt.Printf("    %-16s count=%-8d avg=%-10s max=%s\n",
 			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime))
 	}
 }
 
-// printReadStats prints the read/pread counts and timings. These count only
-// reads that reach the disk (block-cache hits never touch the VFS), so for a
-// read benchmark pread reflects the actual disk-read syscalls and avg is the
-// average read latency. Both lines are always shown.
+// printReadStats prints the read-path syscall counts and timings. These count
+// only reads that reach the disk (block-cache hits never touch the VFS), so
+// pread reflects the actual disk-read syscalls and its avg is the average read
+// latency. readahead is an async prefetch *hint* (issued on sequential access),
+// not a data transfer, so its timing is the cost of the hint, not read latency.
 func printReadStats(s ReadStats) {
-	fmt.Println("  Read calls (VFS):")
+	fmt.Println("  Read syscalls (VFS):")
 	for _, op := range []struct {
 		label string
 		stats IOStat
 	}{
 		{"pread", s.ReadAt},
 		{"read", s.Read},
+		{"readahead(hint)", s.Prefetch},
 	} {
 		fmt.Printf("    %-16s count=%-8d avg=%-10s max=%s\n",
 			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime))

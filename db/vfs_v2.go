@@ -137,3 +137,23 @@ func (f *v2SyncFile) ReadAt(p []byte, off int64) (int, error) {
 	f.readTracker.Record(metrics.OpReadAt, time.Since(start))
 	return n, err
 }
+
+func (f *v2SyncFile) Prefetch(offset, length int64) error {
+	if f.readTracker == nil {
+		return f.File.Prefetch(offset, length)
+	}
+	start := time.Now()
+	err := f.File.Prefetch(offset, length)
+	f.readTracker.Record(metrics.OpPrefetch, time.Since(start))
+	return err
+}
+
+func (f *v2SyncFile) Preallocate(offset, length int64) error {
+	if f.syncTracker == nil {
+		return f.File.Preallocate(offset, length)
+	}
+	start := time.Now()
+	err := f.File.Preallocate(offset, length)
+	f.syncTracker.Record(metrics.OpPreallocate, time.Since(start))
+	return err
+}
