@@ -416,6 +416,53 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 	}
 	b.WriteString("\n")
 
+	// VFS syscall counts and average latencies. Each op contributes a count row
+	// and an avg row; ops that never fired in any result are omitted.
+	b.WriteString("\n## Syscalls (VFS)\n\n")
+	b.WriteString("| Syscall |")
+	for _, r := range results {
+		b.WriteString(fmt.Sprintf(" %s |", r.Benchmark))
+	}
+	b.WriteString("\n|--------|")
+	for range results {
+		b.WriteString("--------|")
+	}
+	b.WriteString("\n")
+
+	for _, op := range []struct {
+		label string
+		get   func(*Result) IOStat
+	}{
+		{"fsync", func(r *Result) IOStat { return r.PebbleFinal.SyncStats.Sync }},
+		{"fdatasync", func(r *Result) IOStat { return r.PebbleFinal.SyncStats.SyncData }},
+		{"sync_file_range", func(r *Result) IOStat { return r.PebbleFinal.SyncStats.SyncTo }},
+		{"fallocate", func(r *Result) IOStat { return r.PebbleFinal.SyncStats.Preallocate }},
+		{"pread", func(r *Result) IOStat { return r.PebbleFinal.ReadStats.ReadAt }},
+		{"read", func(r *Result) IOStat { return r.PebbleFinal.ReadStats.Read }},
+		{"readahead", func(r *Result) IOStat { return r.PebbleFinal.ReadStats.Prefetch }},
+	} {
+		fired := false
+		for _, r := range results {
+			if op.get(r).Count > 0 {
+				fired = true
+				break
+			}
+		}
+		if !fired {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("| %s (n) |", op.label))
+		for _, r := range results {
+			b.WriteString(fmt.Sprintf(" %d |", op.get(r).Count))
+		}
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("| %s (avg) |", op.label))
+		for _, r := range results {
+			b.WriteString(fmt.Sprintf(" %s |", fmtDur(op.get(r).AvgTime())))
+		}
+		b.WriteString("\n")
+	}
+
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 
@@ -469,6 +516,33 @@ func PrintComparison(baseline, current *Result) {
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Block Cache Hits", baseline.PebbleFinal.BlockCacheHits, current.PebbleFinal.BlockCacheHits, pctDiff(float64(baseline.PebbleFinal.BlockCacheHits), float64(current.PebbleFinal.BlockCacheHits)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Table Cache Hits", baseline.PebbleFinal.TableCacheHits, current.PebbleFinal.TableCacheHits, pctDiff(float64(baseline.PebbleFinal.TableCacheHits), float64(current.PebbleFinal.TableCacheHits)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Filter Hits", baseline.PebbleFinal.FilterHits, current.PebbleFinal.FilterHits, pctDiff(float64(baseline.PebbleFinal.FilterHits), float64(current.PebbleFinal.FilterHits)))
+
+	// VFS syscall counts and average latencies. Ops that never fired on either
+	// side (e.g. fdatasync/sync_file_range/fallocate/readahead on macOS) are
+	// skipped to keep the table focused.
+	fmt.Println()
+	fmt.Println("Syscalls (VFS):")
+	for _, op := range []struct {
+		label string
+		b, c  IOStat
+	}{
+		{"fsync", baseline.PebbleFinal.SyncStats.Sync, current.PebbleFinal.SyncStats.Sync},
+		{"fdatasync", baseline.PebbleFinal.SyncStats.SyncData, current.PebbleFinal.SyncStats.SyncData},
+		{"sync_file_range", baseline.PebbleFinal.SyncStats.SyncTo, current.PebbleFinal.SyncStats.SyncTo},
+		{"fallocate", baseline.PebbleFinal.SyncStats.Preallocate, current.PebbleFinal.SyncStats.Preallocate},
+		{"pread", baseline.PebbleFinal.ReadStats.ReadAt, current.PebbleFinal.ReadStats.ReadAt},
+		{"read", baseline.PebbleFinal.ReadStats.Read, current.PebbleFinal.ReadStats.Read},
+		{"readahead", baseline.PebbleFinal.ReadStats.Prefetch, current.PebbleFinal.ReadStats.Prefetch},
+	} {
+		if op.b.Count == 0 && op.c.Count == 0 {
+			continue
+		}
+		fmt.Printf("%-20s %20d %20d %10s\n", op.label+" cnt",
+			op.b.Count, op.c.Count, pctDiff(float64(op.b.Count), float64(op.c.Count)))
+		ba, ca := op.b.AvgTime(), op.c.AvgTime()
+		fmt.Printf("%-20s %20s %20s %10s\n", op.label+" avg",
+			fmtDur(ba), fmtDur(ca), pctDiff(float64(ba), float64(ca)))
+	}
 	fmt.Println("==========================================")
 }
 
