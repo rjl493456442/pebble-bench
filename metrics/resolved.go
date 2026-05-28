@@ -29,6 +29,8 @@ type ResolvedConfig struct {
 	ReadSamplingMultiplier      int64           `json:"read_sampling_multiplier"`
 	BytesPerSync                int             `json:"bytes_per_sync"`
 	WALBytesPerSync             int             `json:"wal_bytes_per_sync"`
+	LBaseMaxBytes               int64           `json:"l_base_max_bytes"`
+	LevelMultiplier             int             `json:"level_multiplier"`
 	Levels                      []ResolvedLevel `json:"levels"`
 }
 

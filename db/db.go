@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -35,6 +36,33 @@ func init() {
 	if v := os.Getenv("PEBBLE_BENCH_LOG_WRITE_STALL"); v != "" {
 		logWriteStall, _ = strconv.ParseBool(v)
 	}
+}
+
+// formatLBase prints an LBaseMaxBytes override compactly, falling back to
+// "default(64MB)" when no override was supplied.
+func formatLBase(p *int64) string {
+	if p == nil {
+		return "default(64MB)"
+	}
+	v := *p
+	switch {
+	case v >= 1<<30:
+		return fmt.Sprintf("%dGB", v>>30)
+	case v >= 1<<20:
+		return fmt.Sprintf("%dMB", v>>20)
+	case v >= 1<<10:
+		return fmt.Sprintf("%dKB", v>>10)
+	default:
+		return fmt.Sprintf("%dB", v)
+	}
+}
+
+// derefIntOr returns *p when p != nil, otherwise the given default.
+func derefIntOr(p *int, dflt int) int {
+	if p == nil {
+		return dflt
+	}
+	return *p
 }
 
 // defaultLevelTargetSizes are the go-ethereum default per-level target file

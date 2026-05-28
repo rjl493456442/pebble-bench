@@ -28,8 +28,11 @@ func openV1(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeSt
 		cacheCleanup()
 		return nil, nil, fmt.Errorf("opening pebble v1 database: %w", err)
 	}
-	// pebble.Open ran EnsureDefaults on opts in place, so opts now reflects the
-	// effective configuration (all defaults materialized).
+	// pebble.Open clones the options before applying defaults, so our pointer
+	// is left untouched for any field we didn't pre-populate (e.g. LBaseMaxBytes,
+	// Experimental.LevelMultiplier). Apply defaults ourselves (idempotent) so
+	// resolveV1Config sees the effective configuration.
+	opts.EnsureDefaults()
 	resolved := resolveV1Config(cfg, opts)
 
 	cleanup := func() {
@@ -113,6 +116,13 @@ func buildV1Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 		WALBytesPerSync:       walBytesPerSync,
 	}
 
+	if cfg.LBaseMaxBytes != nil {
+		opts.LBaseMaxBytes = *cfg.LBaseMaxBytes
+	}
+	if cfg.LevelMultiplier != nil {
+		opts.Experimental.LevelMultiplier = *cfg.LevelMultiplier
+	}
+
 	if cfg.DisableWAL != nil && *cfg.DisableWAL {
 		opts.DisableWAL = true
 	}
@@ -144,6 +154,8 @@ func buildV1Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 		bytesPerSync/1024, walBytesPerSync/1024)
 	log.Printf("  WAL: disabled=%v no_sync=%v",
 		opts.DisableWAL, cfg.GetNoSync())
+	log.Printf("  Leveling: l_base_max_bytes=%s level_multiplier=%d",
+		formatLBase(cfg.LBaseMaxBytes), derefIntOr(cfg.LevelMultiplier, 10))
 	log.Printf("  Bloom filter: %d bits", bloomBits)
 	for i := range levels {
 		l := &levels[i]
@@ -268,6 +280,8 @@ func resolveV1Config(cfg *config.BenchConfig, opts *pebble.Options) *metrics.Res
 		ReadSamplingMultiplier:      opts.Experimental.ReadSamplingMultiplier,
 		BytesPerSync:                opts.BytesPerSync,
 		WALBytesPerSync:             opts.WALBytesPerSync,
+		LBaseMaxBytes:               opts.LBaseMaxBytes,
+		LevelMultiplier:             opts.Experimental.LevelMultiplier,
 	}
 	if opts.MaxConcurrentCompactions != nil {
 		rc.MaxConcurrentCompactions = opts.MaxConcurrentCompactions()

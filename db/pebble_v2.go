@@ -64,6 +64,8 @@ func resolveV2Config(cfg *config.BenchConfig, opts *pebble.Options) *metrics.Res
 		ReadSamplingMultiplier:      opts.Experimental.ReadSamplingMultiplier,
 		BytesPerSync:                opts.BytesPerSync,
 		WALBytesPerSync:             opts.WALBytesPerSync,
+		LBaseMaxBytes:               opts.LBaseMaxBytes,
+		LevelMultiplier:             opts.Experimental.LevelMultiplier,
 	}
 	if opts.CompactionConcurrencyRange != nil {
 		// Record the upper bound, comparable to v1's MaxConcurrentCompactions.
@@ -174,6 +176,13 @@ func buildV2Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 	// the per-level target file size in a separate Options.TargetFileSizes).
 	buildV2LevelOptions(opts, cfg.Levels, bloomBits)
 
+	if cfg.LBaseMaxBytes != nil {
+		opts.LBaseMaxBytes = *cfg.LBaseMaxBytes
+	}
+	if cfg.LevelMultiplier != nil {
+		opts.Experimental.LevelMultiplier = *cfg.LevelMultiplier
+	}
+
 	if cfg.DisableWAL != nil && *cfg.DisableWAL {
 		opts.DisableWAL = true
 	}
@@ -205,6 +214,8 @@ func buildV2Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 		bytesPerSync/1024, walBytesPerSync/1024)
 	log.Printf("  WAL: disabled=%v no_sync=%v",
 		opts.DisableWAL, cfg.GetNoSync())
+	log.Printf("  Leveling: l_base_max_bytes=%s level_multiplier=%d",
+		formatLBase(cfg.LBaseMaxBytes), derefIntOr(cfg.LevelMultiplier, 10))
 	log.Printf("  Bloom filter: %d bits", bloomBits)
 	for i := range opts.Levels {
 		l := &opts.Levels[i]

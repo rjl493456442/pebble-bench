@@ -24,6 +24,30 @@ func ApplyOverrides(cfg *BenchConfig, overrides []string) error {
 }
 
 func applyOverride(cfg *BenchConfig, key, value string) error {
+	// Per-level target file size: target_file_size_l<N>, e.g. target_file_size_l0=4MB.
+	// Handled before the switch so the level index can be parsed out.
+	if strings.HasPrefix(key, "target_file_size_l") {
+		idxStr := strings.TrimPrefix(key, "target_file_size_l")
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			return fmt.Errorf("invalid level index in %q: %w", key, err)
+		}
+		if idx < 0 || idx > 6 {
+			return fmt.Errorf("level index in %q out of range [0,6]", key)
+		}
+		size, err := parseSize(value)
+		if err != nil {
+			return fmt.Errorf("invalid size for %q: %w", key, err)
+		}
+		// Grow the Levels slice to cover this level if necessary, preserving any
+		// already-set per-level overrides at lower indices.
+		for len(cfg.Levels) <= idx {
+			cfg.Levels = append(cfg.Levels, LevelConfig{})
+		}
+		cfg.Levels[idx].TargetFileSize = size
+		return nil
+	}
+
 	switch key {
 	// Database settings
 	case "data_dir":
@@ -104,6 +128,18 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 			return err
 		}
 		cfg.ReadSamplingMultiplier = &v
+	case "l_base_max_bytes":
+		v, err := parseSize(value)
+		if err != nil {
+			return err
+		}
+		cfg.LBaseMaxBytes = &v
+	case "level_multiplier":
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		cfg.LevelMultiplier = &v
 
 	// Sync settings
 	case "bytes_per_sync":
@@ -201,6 +237,10 @@ func ListOverrideKeys() []string {
 		"max_concurrent_compactions", "l0_compaction_threshold",
 		"l0_stop_writes_threshold", "l0_compaction_concurrency",
 		"compaction_debt_concurrency", "read_sampling_multiplier",
+		"l_base_max_bytes", "level_multiplier",
+		"target_file_size_l0", "target_file_size_l1", "target_file_size_l2",
+		"target_file_size_l3", "target_file_size_l4", "target_file_size_l5",
+		"target_file_size_l6",
 		"bytes_per_sync", "wal_bytes_per_sync", "disable_wal", "no_sync",
 		"bloom_filter_bits",
 		"benchmark.name", "benchmark.duration", "benchmark.concurrency",
@@ -208,4 +248,37 @@ func ListOverrideKeys() []string {
 		"benchmark.batch_size", "benchmark.read_percent",
 		"benchmark.init_target_size",
 	}
+}
+
+// parseSize parses a byte size with an optional unit suffix (B/KB/MB/GB/TB,
+// case-insensitive, no space). Plain integers are treated as bytes. This lets
+// override values be written compactly, e.g. l_base_max_bytes=256MB.
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+	upper := strings.ToUpper(s)
+	var mult int64 = 1
+	switch {
+	case strings.HasSuffix(upper, "TB"):
+		mult = 1 << 40
+		s = s[:len(s)-2]
+	case strings.HasSuffix(upper, "GB"):
+		mult = 1 << 30
+		s = s[:len(s)-2]
+	case strings.HasSuffix(upper, "MB"):
+		mult = 1 << 20
+		s = s[:len(s)-2]
+	case strings.HasSuffix(upper, "KB"):
+		mult = 1 << 10
+		s = s[:len(s)-2]
+	case strings.HasSuffix(upper, "B"):
+		s = s[:len(s)-1]
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return n * mult, nil
 }

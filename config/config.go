@@ -33,6 +33,16 @@ type BenchConfig struct {
 	CompactionDebtConcurrency *uint64 `yaml:"compaction_debt_concurrency"`
 	ReadSamplingMultiplier    *int64  `yaml:"read_sampling_multiplier"`
 
+	// LBaseMaxBytes sets the target maximum bytes for Lbase. Pebble's dynamic
+	// level-sizing scales every other level off this value, so it's the primary
+	// lever for trading write amplification against level depth. Nil keeps
+	// Pebble's default (64MB).
+	LBaseMaxBytes *int64 `yaml:"l_base_max_bytes"`
+
+	// LevelMultiplier is the fan-out ratio between adjacent levels. Nil keeps
+	// Pebble's default (10).
+	LevelMultiplier *int `yaml:"level_multiplier"`
+
 	// Sync settings
 	BytesPerSync    *int  `yaml:"bytes_per_sync"`
 	WALBytesPerSync *int  `yaml:"wal_bytes_per_sync"`
