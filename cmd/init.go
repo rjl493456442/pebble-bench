@@ -87,9 +87,10 @@ func runInit(c *cli.Context) error {
 
 	flushTracker := metrics.NewFlushTracker()
 	writeStallTracker := metrics.NewWriteStallTracker()
-	// VFS sync/read instrumentation is only reported by the run command, so the
-	// init path passes nil trackers to avoid any per-call overhead.
-	database, sync, cleanup, err := db.OpenForInit(cfg, flushTracker, writeStallTracker, nil, nil)
+	// VFS sync/read instrumentation and the compaction tracker are only reported
+	// by the run command, so the init path passes nil to avoid any per-call
+	// overhead.
+	database, sync, cleanup, err := db.OpenForInit(cfg, flushTracker, writeStallTracker, nil, nil, nil)
 	if err != nil {
 		return err
 	}

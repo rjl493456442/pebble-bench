@@ -123,14 +123,15 @@ func runBenchmark(c *cli.Context) error {
 	writeStallTracker := metrics.NewWriteStallTracker()
 	syncTracker := metrics.NewSyncTracker()
 	readTracker := metrics.NewReadTracker()
-	database, sync, cleanup, err := db.Open(cfg, flushTracker, writeStallTracker, syncTracker, readTracker)
+	compactionTracker := metrics.NewCompactionTracker()
+	database, sync, cleanup, err := db.Open(cfg, flushTracker, writeStallTracker, syncTracker, readTracker, compactionTracker)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
 	// Create metrics collector
-	collector := metrics.NewCollector(database, 3*time.Second, flushTracker, writeStallTracker, syncTracker, readTracker)
+	collector := metrics.NewCollector(database, 3*time.Second, flushTracker, writeStallTracker, syncTracker, readTracker, compactionTracker)
 
 	// Execute benchmark
 	result, err := bench.Execute(database, sync, cfg, meta, collector)

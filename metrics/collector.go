@@ -25,6 +25,7 @@ type PebbleSnapshot struct {
 	WriteStallStats   WriteStallStats `json:"write_stall_stats"`
 	SyncStats         SyncStats       `json:"sync_stats"`
 	ReadStats         ReadStats       `json:"read_stats"`
+	CompactionStats   CompactionStats `json:"compaction_stats"`
 	BlockCacheHits    int64
 	BlockCacheMisses  int64
 	TableCacheHits    int64
@@ -43,13 +44,14 @@ type Collector struct {
 	writeStallTracker *WriteStallTracker
 	syncTracker       *SyncTracker
 	readTracker       *ReadTracker
+	compactionTracker *CompactionTracker
 
 	mu        sync.Mutex
 	snapshots []PebbleSnapshot
 }
 
 // NewCollector creates a new metrics collector.
-func NewCollector(src MetricsSource, interval time.Duration, flushTracker *FlushTracker, writeStallTracker *WriteStallTracker, syncTracker *SyncTracker, readTracker *ReadTracker) *Collector {
+func NewCollector(src MetricsSource, interval time.Duration, flushTracker *FlushTracker, writeStallTracker *WriteStallTracker, syncTracker *SyncTracker, readTracker *ReadTracker, compactionTracker *CompactionTracker) *Collector {
 	return &Collector{
 		src:               src,
 		interval:          interval,
@@ -57,6 +59,7 @@ func NewCollector(src MetricsSource, interval time.Duration, flushTracker *Flush
 		writeStallTracker: writeStallTracker,
 		syncTracker:       syncTracker,
 		readTracker:       readTracker,
+		compactionTracker: compactionTracker,
 	}
 }
 
@@ -94,6 +97,7 @@ func (c *Collector) capture() {
 		WriteStallStats:   c.writeStallTracker.Stats(),
 		SyncStats:         c.syncTracker.Stats(),
 		ReadStats:         c.readTracker.Stats(),
+		CompactionStats:   c.compactionStatsOrZero(),
 		BlockCacheHits:    m.BlockCacheHits,
 		BlockCacheMisses:  m.BlockCacheMisses,
 		TableCacheHits:    m.TableCacheHits,
@@ -146,6 +150,15 @@ func (c *Collector) MaxReadAmp() int {
 		}
 	}
 	return maxAmp
+}
+
+// compactionStatsOrZero returns the current compaction-tracker snapshot, or a
+// zero value if no tracker was wired in (e.g. the init path).
+func (c *Collector) compactionStatsOrZero() CompactionStats {
+	if c.compactionTracker == nil {
+		return CompactionStats{}
+	}
+	return c.compactionTracker.Stats()
 }
 
 // All returns all captured snapshots.

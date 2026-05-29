@@ -108,6 +108,7 @@ func PrintSummary(r *Result) {
 	}
 	printSyncStats(r.PebbleFinal.SyncStats)
 	printReadStats(r.PebbleFinal.ReadStats)
+	printCompactionStats(r.PebbleFinal.CompactionStats)
 	fmt.Printf("  Block Cache:     %d / %d\n", r.PebbleFinal.BlockCacheHits,
 		r.PebbleFinal.BlockCacheHits+r.PebbleFinal.BlockCacheMisses)
 	fmt.Printf("  Table Cache:     %d / %d\n", r.PebbleFinal.TableCacheHits,
@@ -240,6 +241,11 @@ func WriteMarkdown(path string, r *Result) error {
 		b.WriteString(fmt.Sprintf("| %s (count / avg / max) | %d / %s / %s |\n",
 			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime)))
 	}
+
+	// Per-kind compaction breakdown (count, source bytes, fan-in bytes, ratio).
+	// The fan-in ratio is the key number: for L0→Lbase it tells you the
+	// "passenger" Lbase bytes pulled in per L0 byte.
+	writeCompactionMarkdown(&b, r.PebbleFinal.CompactionStats)
 
 	// Cache and filter stats
 	b.WriteString(fmt.Sprintf("| Block Cache | %s |\n", hitRateStr(r.PebbleFinal.BlockCacheHits, r.PebbleFinal.BlockCacheMisses)))
@@ -463,6 +469,61 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 		b.WriteString("\n")
 	}
 
+	// Per-kind compaction breakdown. The L0→Lbase fan-in ratio is the headline
+	// number for "did this tuning change the random-hash passenger problem".
+	b.WriteString("\n## Compactions (by kind)\n\n")
+	b.WriteString("| Metric |")
+	for _, r := range results {
+		b.WriteString(fmt.Sprintf(" %s |", r.Benchmark))
+	}
+	b.WriteString("\n|--------|")
+	for range results {
+		b.WriteString("--------|")
+	}
+	b.WriteString("\n")
+	for _, k := range []struct {
+		label string
+		get   func(*Result) CompactionBucket
+		ratio bool
+	}{
+		{"L0->Lbase", func(r *Result) CompactionBucket { return r.PebbleFinal.CompactionStats.L0Lbase }, true},
+		{"Lbase+", func(r *Result) CompactionBucket { return r.PebbleFinal.CompactionStats.LbasePlus }, true},
+		{"intra-L0", func(r *Result) CompactionBucket { return r.PebbleFinal.CompactionStats.IntraL0 }, false},
+	} {
+		fired := false
+		for _, r := range results {
+			if k.get(r).Count > 0 {
+				fired = true
+				break
+			}
+		}
+		if !fired {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("| %s (n) |", k.label))
+		for _, r := range results {
+			b.WriteString(fmt.Sprintf(" %d |", k.get(r).Count))
+		}
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("| %s (src/op) |", k.label))
+		for _, r := range results {
+			b.WriteString(fmt.Sprintf(" %s |", FormatSize(avgSourcePerCompaction(k.get(r)))))
+		}
+		b.WriteString("\n")
+		if k.ratio {
+			b.WriteString(fmt.Sprintf("| %s (fanin/op) |", k.label))
+			for _, r := range results {
+				b.WriteString(fmt.Sprintf(" %s |", FormatSize(avgFanInPerCompaction(k.get(r)))))
+			}
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("| %s (fanin ratio) |", k.label))
+			for _, r := range results {
+				b.WriteString(fmt.Sprintf(" %.2f |", weightedFanInRatio(k.get(r))))
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 
@@ -543,7 +604,84 @@ func PrintComparison(baseline, current *Result) {
 		fmt.Printf("%-20s %20s %20s %10s\n", op.label+" avg",
 			fmtDur(ba), fmtDur(ca), pctDiff(float64(ba), float64(ca)))
 	}
+
+	// Compaction breakdown comparison. For each kind we show:
+	//   - count
+	//   - average source bytes per compaction (L0 input for L0→Lbase, start
+	//     level for Lbase+)
+	//   - average fan-in bytes per compaction
+	//   - bytes-weighted fan-in ratio (totalFanIn / totalSource)
+	// Together these answer "how big was each compaction, and how much
+	// passenger data did it pull in".
+	fmt.Println()
+	fmt.Println("Compactions (by kind):")
+	for _, k := range []struct {
+		label string
+		b, c  CompactionBucket
+	}{
+		{"L0->Lbase", baseline.PebbleFinal.CompactionStats.L0Lbase, current.PebbleFinal.CompactionStats.L0Lbase},
+		{"Lbase+", baseline.PebbleFinal.CompactionStats.LbasePlus, current.PebbleFinal.CompactionStats.LbasePlus},
+		{"intra-L0", baseline.PebbleFinal.CompactionStats.IntraL0, current.PebbleFinal.CompactionStats.IntraL0},
+	} {
+		if k.b.Count == 0 && k.c.Count == 0 {
+			continue
+		}
+		fmt.Printf("%-20s %20d %20d %10s\n", "  "+k.label+" cnt",
+			k.b.Count, k.c.Count, pctDiff(float64(k.b.Count), float64(k.c.Count)))
+		bAvgSrc := avgSourcePerCompaction(k.b)
+		cAvgSrc := avgSourcePerCompaction(k.c)
+		fmt.Printf("%-20s %20s %20s %10s\n", "  "+k.label+" src/op",
+			FormatSize(bAvgSrc), FormatSize(cAvgSrc), pctDiff(float64(bAvgSrc), float64(cAvgSrc)))
+		if k.label != "intra-L0" {
+			bAvgFI := avgFanInPerCompaction(k.b)
+			cAvgFI := avgFanInPerCompaction(k.c)
+			fmt.Printf("%-20s %20s %20s %10s\n", "  "+k.label+" fanin/op",
+				FormatSize(bAvgFI), FormatSize(cAvgFI), pctDiff(float64(bAvgFI), float64(cAvgFI)))
+			bRatio := weightedFanInRatio(k.b)
+			cRatio := weightedFanInRatio(k.c)
+			fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  "+k.label+" fanin ratio",
+				bRatio, cRatio, pctDiff(bRatio, cRatio))
+		}
+	}
 	fmt.Println("==========================================")
+}
+
+// avgSourcePerCompaction returns the average source-level bytes per compaction
+// in this bucket (L0 bytes for L0→Lbase, start-level bytes for Lbase+, L0
+// bytes for intra-L0). Zero when no compactions of this kind occurred.
+func avgSourcePerCompaction(b CompactionBucket) uint64 {
+	if b.Count == 0 {
+		return 0
+	}
+	source := b.L0Bytes
+	if b.StartBytes > 0 {
+		source = b.StartBytes
+	}
+	return source / uint64(b.Count)
+}
+
+// avgFanInPerCompaction returns the average fan-in (output-level passenger)
+// bytes per compaction. Not meaningful for intra-L0, which has no destination.
+func avgFanInPerCompaction(b CompactionBucket) uint64 {
+	if b.Count == 0 {
+		return 0
+	}
+	return b.FanInBytes / uint64(b.Count)
+}
+
+// weightedFanInRatio is the bytes-weighted fan-in ratio across all compactions
+// in the bucket: total fan-in bytes / total source bytes. This differs from
+// AvgFanInRatio (the per-compaction mean) — the weighted variant is robust to
+// outlier large/small compactions and is the better summary statistic.
+func weightedFanInRatio(b CompactionBucket) float64 {
+	source := b.L0Bytes
+	if b.StartBytes > 0 {
+		source = b.StartBytes
+	}
+	if source == 0 {
+		return 0
+	}
+	return float64(b.FanInBytes) / float64(source)
 }
 
 // pctDiff returns a formatted percentage change string.
@@ -607,6 +745,81 @@ func printReadStats(s ReadStats) {
 	} {
 		fmt.Printf("    %-16s count=%-8d avg=%-10s max=%s\n",
 			op.label, op.stats.Count, fmtDur(op.stats.AvgTime()), fmtDur(op.stats.MaxTime))
+	}
+}
+
+// printCompactionStats prints the per-kind compaction breakdown. For the two
+// kinds where a fan-in / source ratio is meaningful (L0→Lbase, Lbase+), we
+// also show count, average and max — this is what tells you whether a tuning
+// change actually moved the per-compaction "passenger" cost. intra-L0 is
+// shown bytes-only because it has no destination level to fan-into.
+func printCompactionStats(s CompactionStats) {
+	fmt.Println("  Compactions (by kind):")
+	printCompactionBucket("L0->Lbase", s.L0Lbase, "Lbase/L0")
+	printCompactionBucket("Lbase+   ", s.LbasePlus, "next/start")
+	if s.IntraL0.Count > 0 {
+		fmt.Printf("    %-16s count=%-8d input=%-10s output=%s\n",
+			"intra-L0", s.IntraL0.Count,
+			FormatSize(s.IntraL0.L0Bytes), FormatSize(s.IntraL0.OutputBytes))
+	} else {
+		fmt.Printf("    %-16s count=0\n", "intra-L0")
+	}
+}
+
+// printCompactionBucket prints one row of the compaction-kind table. label is
+// the kind name as shown to the user; ratioLabel describes the per-compaction
+// ratio's numerator/denominator (e.g. "Lbase/L0" for L0→Lbase, where the ratio
+// is the passenger Lbase bytes pulled in per L0 byte).
+func printCompactionBucket(label string, b CompactionBucket, ratioLabel string) {
+	if b.Count == 0 {
+		fmt.Printf("    %-16s count=0\n", label)
+		return
+	}
+	source := b.L0Bytes
+	if b.StartBytes > 0 {
+		source = b.StartBytes
+	}
+	// Sum-based fan-in: total fan-in bytes divided by total source bytes,
+	// independent of per-compaction variance. Often more meaningful than the
+	// per-compaction mean when compactions vary in size.
+	var weightedRatio float64
+	if source > 0 {
+		weightedRatio = float64(b.FanInBytes) / float64(source)
+	}
+	fmt.Printf("    %-16s count=%-8d src=%-10s fan-in=%-10s out=%-10s ratio[%s]=%.2f(avg) min=%.2f max=%.2f\n",
+		label, b.Count,
+		FormatSize(source), FormatSize(b.FanInBytes), FormatSize(b.OutputBytes),
+		ratioLabel, weightedRatio, b.MinFanInRatio, b.MaxFanInRatio)
+}
+
+// writeCompactionMarkdown emits the per-kind compaction breakdown as rows in
+// the single-result markdown table. Only kinds that actually fired produce
+// rows so empty configurations don't clutter the output.
+func writeCompactionMarkdown(b *strings.Builder, s CompactionStats) {
+	for _, k := range []struct {
+		label  string
+		bucket CompactionBucket
+		ratio  bool
+	}{
+		{"L0->Lbase", s.L0Lbase, true},
+		{"Lbase+", s.LbasePlus, true},
+		{"intra-L0", s.IntraL0, false},
+	} {
+		if k.bucket.Count == 0 {
+			continue
+		}
+		source := k.bucket.L0Bytes
+		if k.bucket.StartBytes > 0 {
+			source = k.bucket.StartBytes
+		}
+		if k.ratio {
+			b.WriteString(fmt.Sprintf("| %s (n / src / fan-in / ratio) | %d / %s / %s / %.2f |\n",
+				k.label, k.bucket.Count, FormatSize(source), FormatSize(k.bucket.FanInBytes),
+				weightedFanInRatio(k.bucket)))
+		} else {
+			b.WriteString(fmt.Sprintf("| %s (n / bytes) | %d / %s |\n",
+				k.label, k.bucket.Count, FormatSize(source)))
+		}
 	}
 }
 

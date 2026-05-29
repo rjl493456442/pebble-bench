@@ -17,10 +17,10 @@ const v1MaxMemTableSize = 512 << 20 // 512MB
 
 // openV1 opens a Pebble v1 database and wraps it in the version-agnostic DB
 // interface.
-func openV1(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker) (DB, func(), error) {
+func openV1(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker, compactionTracker *metrics.CompactionTracker) (DB, func(), error) {
 	log.Printf("Opening database with Pebble v1")
 	opts, cacheCleanup := buildV1Options(cfg)
-	opts.EventListener = newV1Listener(flushTracker, writeStallTracker)
+	opts.EventListener = newV1Listener(flushTracker, writeStallTracker, compactionTracker)
 	opts.FS = instrumentV1FS(opts.FS, syncTracker, readTracker)
 
 	database, err := pebble.Open(cfg.DataDir, opts)
@@ -308,9 +308,9 @@ func resolveV1Config(cfg *config.BenchConfig, opts *pebble.Options) *metrics.Res
 	return rc
 }
 
-// newV1Listener builds the event listener that records flush, write-stall and
-// (optionally) compaction events for a Pebble v1 database.
-func newV1Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) *pebble.EventListener {
+// newV1Listener builds the event listener that records flush, write-stall,
+// compaction and (optionally) compaction-log events for a Pebble v1 database.
+func newV1Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, compactionTracker *metrics.CompactionTracker) *pebble.EventListener {
 	listener := &pebble.EventListener{
 		FlushEnd: func(info pebble.FlushInfo) {
 			flushTracker.Record(info.Duration, info.InputBytes)
@@ -331,16 +331,65 @@ func newV1Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metric
 				log.Printf("Write stall end")
 			}
 		},
+		CompactionEnd: func(info pebble.CompactionInfo) {
+			recordV1Compaction(compactionTracker, info)
+			if logCompaction {
+				log.Printf("compaction L%d -> L%d completed", info.Input[0].Level, info.Output.Level)
+			}
+		},
 	}
 	if logCompaction {
 		listener.CompactionBegin = func(info pebble.CompactionInfo) {
 			log.Printf("compaction L%d -> L%d started", info.Input[0].Level, info.Output.Level)
 		}
-		listener.CompactionEnd = func(info pebble.CompactionInfo) {
-			log.Printf("compaction L%d -> L%d completed", info.Input[0].Level, info.Output.Level)
-		}
 	}
 	return listener
+}
+
+// recordV1Compaction adapts a pebble v1 CompactionInfo into the kind+bytes
+// tuple the CompactionTracker wants, then records it. Classification mirrors
+// the metrics.CompactionKind contract: L0→Lbase (L0 input + non-L0 output),
+// Lbase+ (no L0 input + non-L0 output), or intra-L0 (output Level == 0).
+func recordV1Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo) {
+	if t == nil {
+		return
+	}
+	var l0Bytes, startBytes, fanInBytes uint64
+	outputLevel := info.Output.Level
+	for i := range info.Input {
+		lvl := &info.Input[i]
+		var bytes uint64
+		for j := range lvl.Tables {
+			bytes += lvl.Tables[j].Size
+		}
+		switch {
+		case lvl.Level == 0:
+			l0Bytes += bytes
+		case lvl.Level == outputLevel:
+			// Input from the output level itself is the "passenger" data — the
+			// existing files in the destination level that get rewritten as a
+			// side effect of merging in the source-level input.
+			fanInBytes += bytes
+		default:
+			startBytes += bytes
+		}
+	}
+	var outputBytes uint64
+	for i := range info.Output.Tables {
+		outputBytes += info.Output.Tables[i].Size
+	}
+	var kind metrics.CompactionKind
+	switch {
+	case outputLevel == 0:
+		// Output is L0 → intra-L0 compaction. The "L0 bytes" field carries
+		// total input for the bucket; fan-in is not meaningful here.
+		kind = metrics.CompactionIntraL0
+	case l0Bytes > 0:
+		kind = metrics.CompactionL0Lbase
+	default:
+		kind = metrics.CompactionLbasePlus
+	}
+	t.Record(kind, l0Bytes, startBytes, fanInBytes, outputBytes, info.Duration)
 }
 
 // v1DB adapts *pebble.DB (v1) to the DB interface.

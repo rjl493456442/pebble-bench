@@ -156,17 +156,17 @@ func normalizeCompression(name string) string {
 // that must be called on close. A non-nil syncTracker instruments the VFS layer
 // to count and time fsync/fdatasync/sync_file_range calls; a non-nil readTracker
 // does the same for read/pread calls.
-func Open(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker) (DB, bool, func(), error) {
+func Open(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker, compactionTracker *metrics.CompactionTracker) (DB, bool, func(), error) {
 	sync := !cfg.GetNoSync()
 	if cfg.PebbleV2 {
-		database, cleanup, err := openV2(cfg, flushTracker, writeStallTracker, syncTracker, readTracker)
+		database, cleanup, err := openV2(cfg, flushTracker, writeStallTracker, syncTracker, readTracker, compactionTracker)
 		return database, sync, cleanup, err
 	}
-	database, cleanup, err := openV1(cfg, flushTracker, writeStallTracker, syncTracker, readTracker)
+	database, cleanup, err := openV1(cfg, flushTracker, writeStallTracker, syncTracker, readTracker, compactionTracker)
 	return database, sync, cleanup, err
 }
 
 // OpenForInit opens a database optimized for bulk data loading.
-func OpenForInit(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker) (DB, bool, func(), error) {
-	return Open(cfg, flushTracker, writeStallTracker, syncTracker, readTracker)
+func OpenForInit(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker, compactionTracker *metrics.CompactionTracker) (DB, bool, func(), error) {
+	return Open(cfg, flushTracker, writeStallTracker, syncTracker, readTracker, compactionTracker)
 }

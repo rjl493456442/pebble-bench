@@ -10,7 +10,7 @@ import (
 
 func openInstrumented(t *testing.T, cfg *config.BenchConfig, sync *metrics.SyncTracker, read *metrics.ReadTracker) (DB, func()) {
 	t.Helper()
-	database, _, cleanup, err := Open(cfg, metrics.NewFlushTracker(), metrics.NewWriteStallTracker(), sync, read)
+	database, _, cleanup, err := Open(cfg, metrics.NewFlushTracker(), metrics.NewWriteStallTracker(), sync, read, nil)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

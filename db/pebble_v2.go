@@ -18,10 +18,10 @@ const v2MaxMemTableSize = 512 << 20 // 512MB
 
 // openV2 opens a Pebble v2 database and wraps it in the version-agnostic DB
 // interface.
-func openV2(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker) (DB, func(), error) {
+func openV2(cfg *config.BenchConfig, flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, syncTracker *metrics.SyncTracker, readTracker *metrics.ReadTracker, compactionTracker *metrics.CompactionTracker) (DB, func(), error) {
 	log.Printf("Opening database with Pebble v2")
 	opts, cacheCleanup := buildV2Options(cfg)
-	opts.EventListener = newV2Listener(flushTracker, writeStallTracker)
+	opts.EventListener = newV2Listener(flushTracker, writeStallTracker, compactionTracker)
 	opts.FS = instrumentV2FS(opts.FS, syncTracker, readTracker)
 
 	database, err := pebble.Open(cfg.DataDir, opts)
@@ -319,8 +319,9 @@ func v2Compression(s string) (*sstable.CompressionProfile, bool) {
 	}
 }
 
-// newV2Listener builds the event listener for a Pebble v2 database.
-func newV2Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker) *pebble.EventListener {
+// newV2Listener builds the event listener for a Pebble v2 database. See
+// newV1Listener for the same wiring against pebble v1.
+func newV2Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metrics.WriteStallTracker, compactionTracker *metrics.CompactionTracker) *pebble.EventListener {
 	listener := &pebble.EventListener{
 		FlushEnd: func(info pebble.FlushInfo) {
 			flushTracker.Record(info.Duration, info.InputBytes)
@@ -341,16 +342,60 @@ func newV2Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metric
 				log.Printf("Write stall end")
 			}
 		},
+		CompactionEnd: func(info pebble.CompactionInfo) {
+			recordV2Compaction(compactionTracker, info)
+			if logCompaction {
+				log.Printf("compaction L%d -> L%d completed", info.Input[0].Level, info.Output.Level)
+			}
+		},
 	}
 	if logCompaction {
 		listener.CompactionBegin = func(info pebble.CompactionInfo) {
 			log.Printf("compaction L%d -> L%d started", info.Input[0].Level, info.Output.Level)
 		}
-		listener.CompactionEnd = func(info pebble.CompactionInfo) {
-			log.Printf("compaction L%d -> L%d completed", info.Input[0].Level, info.Output.Level)
-		}
 	}
 	return listener
+}
+
+// recordV2Compaction is the v2 twin of recordV1Compaction. Pebble v1 and v2
+// have separate Go packages with structurally-identical CompactionInfo /
+// LevelInfo / TableInfo types, so we duplicate the adapter rather than try to
+// share a single generic one across import paths.
+func recordV2Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo) {
+	if t == nil {
+		return
+	}
+	var l0Bytes, startBytes, fanInBytes uint64
+	outputLevel := info.Output.Level
+	for i := range info.Input {
+		lvl := &info.Input[i]
+		var bytes uint64
+		for j := range lvl.Tables {
+			bytes += lvl.Tables[j].Size
+		}
+		switch {
+		case lvl.Level == 0:
+			l0Bytes += bytes
+		case lvl.Level == outputLevel:
+			fanInBytes += bytes
+		default:
+			startBytes += bytes
+		}
+	}
+	var outputBytes uint64
+	for i := range info.Output.Tables {
+		outputBytes += info.Output.Tables[i].Size
+	}
+	var kind metrics.CompactionKind
+	switch {
+	case outputLevel == 0:
+		kind = metrics.CompactionIntraL0
+	case l0Bytes > 0:
+		kind = metrics.CompactionL0Lbase
+	default:
+		kind = metrics.CompactionLbasePlus
+	}
+	t.Record(kind, l0Bytes, startBytes, fanInBytes, outputBytes, info.Duration)
 }
 
 // v2DB adapts *pebble.DB (v2) to the DB interface.
