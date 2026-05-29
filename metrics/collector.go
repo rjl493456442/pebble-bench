@@ -80,6 +80,13 @@ func (c *Collector) Run(ctx context.Context) {
 
 func (c *Collector) capture() {
 	m := c.src.Metrics()
+	// Push the fresh per-level size snapshot into the compaction tracker so
+	// the next batch of CompactionEnd events can compute fan-in / destination
+	// pct against an up-to-date total. Up to one tick of staleness is fine
+	// since per-level totals move slowly under steady-state writes.
+	if c.compactionTracker != nil {
+		c.compactionTracker.SetLevelBytes(m.LevelSizes)
+	}
 	snap := PebbleSnapshot{
 		Timestamp:         time.Now(),
 		DiskUsage:         m.DiskSpaceUsage,

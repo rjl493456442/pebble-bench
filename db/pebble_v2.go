@@ -395,7 +395,7 @@ func recordV2Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 	default:
 		kind = metrics.CompactionLbasePlus
 	}
-	t.Record(kind, l0Bytes, startBytes, fanInBytes, outputBytes, info.Duration)
+	t.Record(kind, outputLevel, l0Bytes, startBytes, fanInBytes, outputBytes, info.Duration)
 }
 
 // v2DB adapts *pebble.DB (v2) to the DB interface.

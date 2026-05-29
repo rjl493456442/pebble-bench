@@ -54,6 +54,20 @@ func (k CompactionKind) String() string {
 // data being rewritten alongside the L0 input). For CompactionLbasePlus,
 // FanIn is bytes from the deeper level (the next level down). intra-L0 has no
 // meaningful fan-in (input and output are both L0).
+//
+// Two ratios are reported per compaction:
+//
+//   - FanInRatio  = fan_in_bytes / source_input_bytes  ("WA accounting view")
+//     Tells you what (1 + ratio) write-amp this step contributed per source
+//     byte. Independent of the destination level's absolute size.
+//
+//   - PctOfOutput = fan_in_bytes / output_level_total_bytes  ("geometry view")
+//     Tells you what fraction of the destination level was touched by this
+//     compaction. Bounded in [0, 1], maps directly to compaction key-range
+//     coverage for random-hash workloads. Only meaningful when we have a
+//     non-zero estimate of the destination level's total size at compaction
+//     time; otherwise the sample is skipped (PctCount records how many
+//     observations contributed to Sum/Min/Max for PctOfOutput).
 type CompactionBucket struct {
 	Count       int64         `json:"count"`
 	L0Bytes     uint64        `json:"l0_bytes"`     // input bytes from L0 (zero for non-L0 kinds)
@@ -62,13 +76,18 @@ type CompactionBucket struct {
 	OutputBytes uint64        `json:"output_bytes"`
 	Duration    time.Duration `json:"duration_ns"`
 
-	// Per-compaction fan-in ratio = fan_in_bytes / source_input_bytes. For
-	// L0→Lbase that's Lbase/L0; for Lbase+ that's next_level/start_level.
-	// We keep sum + min + max so we can report mean/min/max without retaining
-	// the per-compaction sample list.
+	// Per-compaction WA ratio = fan_in / source_input.
 	SumFanInRatio float64 `json:"sum_fan_in_ratio"`
 	MinFanInRatio float64 `json:"min_fan_in_ratio"`
 	MaxFanInRatio float64 `json:"max_fan_in_ratio"`
+
+	// Per-compaction geometric coverage = fan_in / output_level_total. Only
+	// recorded when the destination level had a non-zero size at compaction
+	// time (otherwise the sample is undefined).
+	PctCount   int64   `json:"pct_count"`
+	SumPct     float64 `json:"sum_pct"`
+	MinPct     float64 `json:"min_pct"`
+	MaxPct     float64 `json:"max_pct"`
 }
 
 // AvgFanInRatio returns the mean (fan-in / source-input) ratio across all
@@ -78,6 +97,16 @@ func (b CompactionBucket) AvgFanInRatio() float64 {
 		return 0
 	}
 	return b.SumFanInRatio / float64(b.Count)
+}
+
+// AvgPctOfOutput returns the mean (fan-in / output-level-total) across all
+// compactions where the destination level size was known to be non-zero, or
+// 0 if there were no such samples.
+func (b CompactionBucket) AvgPctOfOutput() float64 {
+	if b.PctCount == 0 {
+		return 0
+	}
+	return b.SumPct / float64(b.PctCount)
 }
 
 // CompactionStats is a snapshot of all compaction-tracker buckets.
@@ -90,9 +119,15 @@ type CompactionStats struct {
 // CompactionTracker records aggregated per-compaction-kind statistics
 // observed at the Pebble EventListener.CompactionEnd boundary. Safe for
 // concurrent use; the EventListener may invoke it from internal goroutines.
+//
+// The tracker also holds a recently-sampled snapshot of per-level total bytes
+// (pushed in by the Collector every few seconds) so that each recorded
+// compaction can compute fan-in / destination-level-total — the geometric
+// "what fraction of Lbase did this compaction touch" view.
 type CompactionTracker struct {
-	mu      sync.Mutex
-	buckets [numCompactionKinds]CompactionBucket
+	mu         sync.Mutex
+	buckets    [numCompactionKinds]CompactionBucket
+	levelBytes [7]uint64 // most recent snapshot of per-level total bytes
 }
 
 // NewCompactionTracker creates a tracker with all min-ratios primed to +Inf
@@ -101,16 +136,37 @@ func NewCompactionTracker() *CompactionTracker {
 	t := &CompactionTracker{}
 	for i := range t.buckets {
 		t.buckets[i].MinFanInRatio = math.Inf(1)
+		t.buckets[i].MinPct = math.Inf(1)
 	}
 	return t
 }
 
-// Record adds one compaction observation to the tracker. The caller is
-// responsible for extracting the relevant byte counts and ratio from the
-// pebble.CompactionInfo (the metrics package intentionally has no Pebble
-// dependency, so the db package adapts the event for us).
+// SetLevelBytes pushes in a fresh snapshot of per-level total bytes (typically
+// from the collector's periodic db.Metrics() poll). Subsequent Record calls
+// use this snapshot to compute the per-compaction fan-in percentage; up to
+// the collector's tick interval of staleness is acceptable since Lbase total
+// size changes slowly under steady-state writes.
+func (t *CompactionTracker) SetLevelBytes(sizes [7]int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := range sizes {
+		if sizes[i] < 0 {
+			t.levelBytes[i] = 0
+		} else {
+			t.levelBytes[i] = uint64(sizes[i])
+		}
+	}
+}
+
+// Record adds one compaction observation to the tracker. outputLevel is the
+// destination level (used to look up the most recent total-bytes snapshot for
+// the fan-in percentage). The caller is responsible for extracting the
+// relevant byte counts from the pebble.CompactionInfo (the metrics package
+// intentionally has no Pebble dependency, so the db package adapts the event
+// for us).
 func (t *CompactionTracker) Record(
 	kind CompactionKind,
+	outputLevel int,
 	l0Bytes, startBytes, fanInBytes, outputBytes uint64,
 	duration time.Duration,
 ) {
@@ -127,28 +183,49 @@ func (t *CompactionTracker) Record(
 	b.OutputBytes += outputBytes
 	b.Duration += duration
 
-	// The ratio is fan-in / source-input. Source for L0→Lbase is the L0 bytes;
-	// for Lbase+ it's the starting-level bytes. The caller passes both, we pick
-	// whichever is non-zero (kinds use exactly one).
+	// intra-L0 has no destination level distinct from its source, so neither
+	// ratio is meaningful here. Stop after the byte accumulators.
+	if kind == CompactionIntraL0 {
+		return
+	}
+
+	// WA ratio = fan-in / source-input.
 	var source uint64
 	switch kind {
 	case CompactionL0Lbase:
 		source = l0Bytes
 	case CompactionLbasePlus:
 		source = startBytes
-	default:
-		return // intra-L0: ratio is not meaningful, skip the rest
 	}
-	if source == 0 {
-		return
+	if source > 0 {
+		ratio := float64(fanInBytes) / float64(source)
+		b.SumFanInRatio += ratio
+		if ratio < b.MinFanInRatio {
+			b.MinFanInRatio = ratio
+		}
+		if ratio > b.MaxFanInRatio {
+			b.MaxFanInRatio = ratio
+		}
 	}
-	ratio := float64(fanInBytes) / float64(source)
-	b.SumFanInRatio += ratio
-	if ratio < b.MinFanInRatio {
-		b.MinFanInRatio = ratio
-	}
-	if ratio > b.MaxFanInRatio {
-		b.MaxFanInRatio = ratio
+
+	// Geometric pct = fan-in / destination-level-total. Skip when the
+	// destination level total isn't known (e.g. the very first compactions
+	// before the collector has pushed in a snapshot, or a freshly-created
+	// destination level). PctCount tracks how many samples actually
+	// contributed so the average is well-defined.
+	if outputLevel >= 0 && outputLevel < len(t.levelBytes) {
+		dst := t.levelBytes[outputLevel]
+		if dst > 0 {
+			pct := float64(fanInBytes) / float64(dst)
+			b.PctCount++
+			b.SumPct += pct
+			if pct < b.MinPct {
+				b.MinPct = pct
+			}
+			if pct > b.MaxPct {
+				b.MaxPct = pct
+			}
+		}
 	}
 }
 
@@ -166,6 +243,9 @@ func (t *CompactionTracker) Stats() CompactionStats {
 	for _, b := range []*CompactionBucket{&out.L0Lbase, &out.LbasePlus, &out.IntraL0} {
 		if math.IsInf(b.MinFanInRatio, 1) {
 			b.MinFanInRatio = 0
+		}
+		if math.IsInf(b.MinPct, 1) {
+			b.MinPct = 0
 		}
 	}
 	return out

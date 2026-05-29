@@ -516,11 +516,26 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 				b.WriteString(fmt.Sprintf(" %s |", FormatSize(avgFanInPerCompaction(k.get(r)))))
 			}
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("| %s (fanin ratio) |", k.label))
+			b.WriteString(fmt.Sprintf("| %s (WA ratio) |", k.label))
 			for _, r := range results {
 				b.WriteString(fmt.Sprintf(" %.2f |", weightedFanInRatio(k.get(r))))
 			}
 			b.WriteString("\n")
+			// Geometric pct row — only added if at least one result has it.
+			hasPct := false
+			for _, r := range results {
+				if k.get(r).PctCount > 0 {
+					hasPct = true
+					break
+				}
+			}
+			if hasPct {
+				b.WriteString(fmt.Sprintf("| %s (pct of dst) |", k.label))
+				for _, r := range results {
+					b.WriteString(fmt.Sprintf(" %.2f%% |", k.get(r).AvgPctOfOutput()*100))
+				}
+				b.WriteString("\n")
+			}
 		}
 	}
 
@@ -639,8 +654,17 @@ func PrintComparison(baseline, current *Result) {
 				FormatSize(bAvgFI), FormatSize(cAvgFI), pctDiff(float64(bAvgFI), float64(cAvgFI)))
 			bRatio := weightedFanInRatio(k.b)
 			cRatio := weightedFanInRatio(k.c)
-			fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  "+k.label+" fanin ratio",
+			fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  "+k.label+" WA ratio",
 				bRatio, cRatio, pctDiff(bRatio, cRatio))
+			// Geometric coverage: fan-in / destination-level total. Only
+			// rendered when at least one observation contributed; the avg
+			// is per-compaction (matches what AvgPctOfOutput returns).
+			if k.b.PctCount > 0 || k.c.PctCount > 0 {
+				bPct := k.b.AvgPctOfOutput() * 100
+				cPct := k.c.AvgPctOfOutput() * 100
+				fmt.Printf("%-20s %19.2f%% %19.2f%% %10s\n", "  "+k.label+" pct of dst",
+					bPct, cPct, pctDiff(bPct, cPct))
+			}
 		}
 	}
 	fmt.Println("==========================================")
@@ -768,8 +792,10 @@ func printCompactionStats(s CompactionStats) {
 
 // printCompactionBucket prints one row of the compaction-kind table. label is
 // the kind name as shown to the user; ratioLabel describes the per-compaction
-// ratio's numerator/denominator (e.g. "Lbase/L0" for L0→Lbase, where the ratio
-// is the passenger Lbase bytes pulled in per L0 byte).
+// WA ratio's numerator/denominator (e.g. "Lbase/L0" for L0→Lbase, where the
+// ratio is the passenger Lbase bytes pulled in per L0 byte). When at least
+// one observation contributed to the geometric pct (fan-in / destination
+// total), a second line shows the pct stats.
 func printCompactionBucket(label string, b CompactionBucket, ratioLabel string) {
 	if b.Count == 0 {
 		fmt.Printf("    %-16s count=0\n", label)
@@ -790,11 +816,20 @@ func printCompactionBucket(label string, b CompactionBucket, ratioLabel string) 
 		label, b.Count,
 		FormatSize(source), FormatSize(b.FanInBytes), FormatSize(b.OutputBytes),
 		ratioLabel, weightedRatio, b.MinFanInRatio, b.MaxFanInRatio)
+	if b.PctCount > 0 {
+		// "% of dst": geometric coverage. avg is the per-compaction mean of
+		// (fan-in / dst-total), not the bytes-weighted version, since the
+		// destination total varies across compactions as the level grows.
+		fmt.Printf("    %-16s                  pct[fan-in/dst]=%.2f%%(avg) min=%.2f%% max=%.2f%% (n=%d)\n",
+			"", b.AvgPctOfOutput()*100, b.MinPct*100, b.MaxPct*100, b.PctCount)
+	}
 }
 
 // writeCompactionMarkdown emits the per-kind compaction breakdown as rows in
 // the single-result markdown table. Only kinds that actually fired produce
-// rows so empty configurations don't clutter the output.
+// rows so empty configurations don't clutter the output. Each kind with a
+// meaningful fan-in (L0→Lbase, Lbase+) gets two rows: the WA ratio
+// (fan-in/source) and the geometric pct (fan-in/destination-total).
 func writeCompactionMarkdown(b *strings.Builder, s CompactionStats) {
 	for _, k := range []struct {
 		label  string
@@ -813,9 +848,13 @@ func writeCompactionMarkdown(b *strings.Builder, s CompactionStats) {
 			source = k.bucket.StartBytes
 		}
 		if k.ratio {
-			b.WriteString(fmt.Sprintf("| %s (n / src / fan-in / ratio) | %d / %s / %s / %.2f |\n",
+			b.WriteString(fmt.Sprintf("| %s (n / src / fan-in / WA ratio) | %d / %s / %s / %.2f |\n",
 				k.label, k.bucket.Count, FormatSize(source), FormatSize(k.bucket.FanInBytes),
 				weightedFanInRatio(k.bucket)))
+			if k.bucket.PctCount > 0 {
+				b.WriteString(fmt.Sprintf("| %s (pct of dst avg / min / max) | %.2f%% / %.2f%% / %.2f%% |\n",
+					k.label, k.bucket.AvgPctOfOutput()*100, k.bucket.MinPct*100, k.bucket.MaxPct*100))
+			}
 		} else {
 			b.WriteString(fmt.Sprintf("| %s (n / bytes) | %d / %s |\n",
 				k.label, k.bucket.Count, FormatSize(source)))
