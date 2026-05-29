@@ -31,8 +31,8 @@ fi
 # throughput, tail latency, the amp triangle, device-pressure proxies (fsync
 # count/avg, sync_file_range avg) — plus both leveling knobs so the table is
 # self-explanatory regardless of which one is being swept.
-echo "| Case | LBase | Mult | Ops/sec | avg | p99 | p99.9 | max | Write Amp | Bytes W | Read Amp(avg) | Compactions | Stalls | fsync cnt | fsync avg | fdatasync avg | SFR avg |"
-echo "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+echo "| Case | LBase | Mult | Ops/sec | avg | p99 | p99.9 | max | Write Amp | Bytes W | Read Amp(avg) | Compactions | Stalls | fsync cnt | fsync avg | fdatasync avg | SFR avg | L0→Lb WA | L0→Lb pct | intraL0 cnt |"
+echo "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
 
 # Single jq program that emits one TSV row per file. jq does the heavy lifting:
 # computes averages (total_time/count) and formats bytes / durations into the
@@ -71,6 +71,18 @@ JQ_PROG='
   # as integer microseconds. Convert to ns for the formatter.
   def us_to_ns: (. // 0) * 1000;
 
+  # Compaction-tracker helpers. Bytes-weighted WA ratio is fan_in / source
+  # (where source = l0_bytes for L0→Lbase). Geometric pct is the per-compaction
+  # mean of fan_in / dst-total (sum_pct / pct_count, both pushed by the tracker).
+  def l0_lbase_wa:
+    (.pebble_final.compaction_stats.l0_lbase.fan_in_bytes // 0) as $fi |
+    (.pebble_final.compaction_stats.l0_lbase.l0_bytes // 0) as $src |
+    if $src > 0 then $fi / $src else 0 end;
+  def l0_lbase_pct:
+    (.pebble_final.compaction_stats.l0_lbase.sum_pct // 0) as $s |
+    (.pebble_final.compaction_stats.l0_lbase.pct_count // 0) as $n |
+    if $n > 0 then $s / $n * 100 else 0 end;
+
   [
     $name,
     ((.config.pebble.l_base_max_bytes // 0) | fmt_lbase),
@@ -88,7 +100,10 @@ JQ_PROG='
     (.pebble_final.sync_stats.fsync.count // 0),
     (avg_ns(.pebble_final.sync_stats.fsync)           | fmt_dur_ns),
     (avg_ns(.pebble_final.sync_stats.fdatasync)       | fmt_dur_ns),
-    (avg_ns(.pebble_final.sync_stats.sync_file_range) | fmt_dur_ns)
+    (avg_ns(.pebble_final.sync_stats.sync_file_range) | fmt_dur_ns),
+    l0_lbase_wa,
+    l0_lbase_pct,
+    (.pebble_final.compaction_stats.intra_l0.count // 0)
   ] | @tsv
 '
 
@@ -98,12 +113,13 @@ for f in "${RUN_DIR}"/*.json; do
   case "$base" in compare-*) continue ;; esac
   jq -r --arg name "$base" "$JQ_PROG" "$f"
 done | sort -t$'\t' -k4,4 -g -r | \
-while IFS=$'\t' read -r name lbase mult ops avg p99 p999 mx wamp bw ramp comps stalls fsc fs_avg fdb_avg sfr_avg; do
-  printf "| %s | %s | %s | %.0f | %s | %s | %s | %s | %.2f | %s | %.2f | %d | %d | %d | %s | %s | %s |\n" \
+while IFS=$'\t' read -r name lbase mult ops avg p99 p999 mx wamp bw ramp comps stalls fsc fs_avg fdb_avg sfr_avg l0lb_wa l0lb_pct intral0_n; do
+  printf "| %s | %s | %s | %.0f | %s | %s | %s | %s | %.2f | %s | %.2f | %d | %d | %d | %s | %s | %s | %.2f | %.2f%% | %d |\n" \
     "$name" "$lbase" "$mult" "$ops" "$avg" "$p99" "$p999" "$mx" \
     "$wamp" "$bw" "$ramp" "$comps" "$stalls" "$fsc" \
-    "$fs_avg" "$fdb_avg" "$sfr_avg"
+    "$fs_avg" "$fdb_avg" "$sfr_avg" \
+    "$l0lb_wa" "$l0lb_pct" "$intral0_n"
 done
 
 echo
-echo "_Sorted by ops/sec descending. \"SFR\" = sync_file_range. \`Read Amp(avg)\` is the run-wide average (\`read_amp_avg\`), falling back to the final snapshot if missing._"
+echo "_Sorted by ops/sec descending. \"SFR\" = sync_file_range. \`Read Amp(avg)\` is the run-wide average. \`L0→Lb WA\` is bytes-weighted fan-in/source for L0→Lbase. \`L0→Lb pct\` is mean per-compaction fan-in/destination-total (geometric coverage). \`intraL0 cnt\` counts wasted in-L0 reshuffle compactions._"
