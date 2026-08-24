@@ -31,6 +31,7 @@ type ResolvedConfig struct {
 	WALBytesPerSync             int             `json:"wal_bytes_per_sync"`
 	LBaseMaxBytes               int64           `json:"l_base_max_bytes"`
 	LevelMultiplier             int             `json:"level_multiplier"`
+	FlushSplitBytes             int64           `json:"flush_split_bytes"`
 	Levels                      []ResolvedLevel `json:"levels"`
 }
 

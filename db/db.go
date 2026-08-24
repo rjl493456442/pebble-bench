@@ -41,8 +41,20 @@ func init() {
 // formatLBase prints an LBaseMaxBytes override compactly, falling back to
 // "default(64MB)" when no override was supplied.
 func formatLBase(p *int64) string {
+	return formatOptSize(p, "default(64MB)")
+}
+
+// formatFlushSplit renders a FlushSplitBytes override. Pebble derives the value
+// from twice the L0 target file size when it is unset, so there is no single
+// number to name as the default.
+func formatFlushSplit(p *int64) string {
+	return formatOptSize(p, "default(2x L0 target)")
+}
+
+// formatOptSize renders an optional byte size, falling back to the given label.
+func formatOptSize(p *int64, unset string) string {
 	if p == nil {
-		return "default(64MB)"
+		return unset
 	}
 	v := *p
 	switch {

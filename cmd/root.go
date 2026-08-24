@@ -34,11 +34,15 @@ var (
 		Name:  "pebblev2",
 		Usage: "run benchmarks against Pebble v2 instead of v1",
 	}
+	writeHeavyFlag = &cli.BoolFlag{
+		Name:  "write-heavy",
+		Usage: "re-tune pebble for a write-dominated burst, trading read performance for less write amplification",
+	}
 )
 
 // sharedFlags returns the flags common to all subcommands.
 func sharedFlags() []cli.Flag {
-	return []cli.Flag{configFlag, overrideFlag, dataDirFlag, logFileFlag, pebbleV2Flag}
+	return []cli.Flag{configFlag, overrideFlag, dataDirFlag, logFileFlag, pebbleV2Flag, writeHeavyFlag}
 }
 
 // App returns the CLI application.
@@ -82,6 +86,12 @@ func loadConfig(c *cli.Context) (*config.BenchConfig, error) {
 		}
 	} else {
 		cfg = config.DefaultConfig()
+	}
+
+	// Apply the write-heavy profile before the overrides, so that an --override
+	// can still pin an individual knob and have the profile built around it.
+	if c.Bool(writeHeavyFlag.Name) {
+		cfg.ApplyWriteHeavy()
 	}
 
 	// Apply --override flags

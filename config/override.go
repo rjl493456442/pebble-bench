@@ -140,6 +140,12 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 			return err
 		}
 		cfg.LevelMultiplier = &v
+	case "flush_split_bytes":
+		v, err := parseSize(value)
+		if err != nil {
+			return err
+		}
+		cfg.FlushSplitBytes = &v
 
 	// Sync settings
 	case "bytes_per_sync":
@@ -237,7 +243,7 @@ func ListOverrideKeys() []string {
 		"max_concurrent_compactions", "l0_compaction_threshold",
 		"l0_stop_writes_threshold", "l0_compaction_concurrency",
 		"compaction_debt_concurrency", "read_sampling_multiplier",
-		"l_base_max_bytes", "level_multiplier",
+		"l_base_max_bytes", "level_multiplier", "flush_split_bytes",
 		"target_file_size_l0", "target_file_size_l1", "target_file_size_l2",
 		"target_file_size_l3", "target_file_size_l4", "target_file_size_l5",
 		"target_file_size_l6",

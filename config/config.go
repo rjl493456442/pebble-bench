@@ -43,6 +43,12 @@ type BenchConfig struct {
 	// Pebble's default (10).
 	LevelMultiplier *int `yaml:"level_multiplier"`
 
+	// FlushSplitBytes is the target bytes per sublevel between L0 flush split
+	// points. Pebble derives it from the L0 target file size when unset, so a
+	// small L0 target shatters one memtable flush into many sstables. Nil keeps
+	// Pebble's default (2x the L0 target file size).
+	FlushSplitBytes *int64 `yaml:"flush_split_bytes"`
+
 	// Sync settings
 	BytesPerSync    *int  `yaml:"bytes_per_sync"`
 	WALBytesPerSync *int  `yaml:"wal_bytes_per_sync"`
