@@ -22,7 +22,7 @@ type progressPoint struct {
 
 // Populate fills the database to approximately the target size.
 // If existing is non-nil, population resumes from the existing key count.
-func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize int, sync bool, profile string, existing *Meta) (*Meta, error) {
+func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize int, sync bool, profile string, stall *metrics.WriteStallTracker, existing *Meta) (*Meta, error) {
 	// Progress and the stop condition are driven by the logical volume of data
 	// written (keys * entry size), not by Pebble's DiskSpaceUsage. The latter
 	// includes the WAL, obsolete and zombie files that are deleted asynchronously
@@ -135,6 +135,20 @@ func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize i
 	elapsed := time.Since(startTime)
 	overallRate := float64(newKeys) / elapsed.Seconds()
 
+	// Write-stall accounting. The tracker has been fed by Pebble's
+	// WriteStallBegin/End events since the database was opened, so reading it
+	// after the final flush captures every stall in this run. StallPct is the
+	// share of wall-clock the writer spent blocked — the throughput cost of the
+	// LSM falling behind.
+	var stallStats metrics.WriteStallStats
+	if stall != nil {
+		stallStats = stall.Stats()
+	}
+	var stallPct float64
+	if elapsed > 0 {
+		stallPct = stallStats.TotalTime.Seconds() / elapsed.Seconds() * 100
+	}
+
 	// Print final summary
 	fmt.Println()
 	fmt.Println("========== Population Summary ==========")
@@ -162,6 +176,9 @@ func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize i
 	fmt.Printf("  Bytes Read:          %s (compaction)\n", formatBytes(int64(m.BytesRead)))
 	fmt.Printf("  WAL Bytes In:        %s (logical ingest)\n", formatBytes(int64(m.WALBytesIn)))
 	fmt.Printf("  WAL Bytes Written:   %s (physical, recycling-inflated)\n", formatBytes(int64(m.WALBytesWritten)))
+	fmt.Printf("  Write Stalls:        %d events, %s total (%.1f%% of run), max %s\n",
+		stallStats.Count, stallStats.TotalTime.Round(time.Millisecond),
+		stallPct, stallStats.MaxTime.Round(time.Millisecond))
 	if len(points) > 0 {
 		var minRate, maxRate float64
 		minRate = math.MaxFloat64
@@ -211,6 +228,11 @@ func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize i
 			OnDiskBytes:  finalPhysical,
 			LevelSizes:   m.LevelSizes,
 			LevelFiles:   m.LevelFiles,
+
+			StallCount:    stallStats.Count,
+			StallTotalSec: stallStats.TotalTime.Seconds(),
+			StallMaxSec:   stallStats.MaxTime.Seconds(),
+			StallPct:      stallPct,
 		},
 	}, nil
 }

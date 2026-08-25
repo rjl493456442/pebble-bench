@@ -140,7 +140,11 @@ func (c *BenchConfig) ApplyWriteHeavy() {
 	// actually gate reads keep theirs.
 	c.BloomFilterBits = intPtr(WriteHeavyBloomFilterBits)
 	for i := range c.Levels {
-		c.Levels[i].NoFilter = false
+		// Disable the filter only on the bottommost level; keep it everywhere
+		// above. Stating this on the profile itself, rather than leaning on the
+		// db layer's "bloom on every level but the last" default, keeps the
+		// intent local and robust to that default changing.
+		c.Levels[i].NoFilter = i == len(c.Levels)-1
 		c.Levels[i].BloomFilterBits = nil
 	}
 }

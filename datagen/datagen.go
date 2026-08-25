@@ -64,6 +64,15 @@ type PopulateStats struct {
 	// LevelSizes and LevelFiles are the final LSM shape (L0..L6).
 	LevelSizes [7]int64 `json:"level_sizes"`
 	LevelFiles [7]int64 `json:"level_files"`
+
+	// WriteStall summarizes how long writers were blocked waiting for the LSM to
+	// catch up (memtable or L0 back-pressure). StallPct — the fraction of the run
+	// spent stalled — is the number that matters: it is throughput the profile
+	// left on the table.
+	StallCount    int64   `json:"stall_count"`
+	StallTotalSec float64 `json:"stall_total_sec"`
+	StallMaxSec   float64 `json:"stall_max_sec"`
+	StallPct      float64 `json:"stall_pct_of_run"`
 }
 
 // SaveMeta writes metadata to a JSON file in the data directory.

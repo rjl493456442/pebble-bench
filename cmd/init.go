@@ -101,7 +101,7 @@ func runInit(c *cli.Context) error {
 		profile = "write-heavy"
 	}
 
-	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, sync, profile, existing)
+	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, sync, profile, writeStallTracker, existing)
 	if err != nil {
 		return err
 	}
