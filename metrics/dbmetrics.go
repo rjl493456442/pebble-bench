@@ -10,7 +10,9 @@ type DBMetrics struct {
 	WriteAmp          float64 // total bytes written to disk / logical bytes written
 	BytesWritten      uint64  // actual bytes written to disk (flushed + compacted, incl. blob)
 	BytesRead         uint64  // bytes read during compaction
-	BytesIn           uint64  // logical bytes written by the user (WAL + ingested)
+	BytesIn           uint64  // Pebble's write-amp denominator: WAL.BytesWritten (physical) + ingested
+	WALBytesIn        uint64  // logical bytes appended to the WAL (the real user ingest)
+	WALBytesWritten   uint64  // physical bytes written to the WAL (inflated by file recycling)
 	CompactionCount   int64
 	CompactionDebt    uint64
 	CompactionsActive int64

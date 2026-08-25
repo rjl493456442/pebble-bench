@@ -15,6 +15,55 @@ type Meta struct {
 	TotalKeys uint64 `json:"total_keys"`
 	KeySize   int    `json:"key_size"`
 	ValueSize int    `json:"value_size"`
+
+	// Populate records the write-side statistics of the run that built (or last
+	// extended) the dataset, most importantly the write amplification. Pebble's
+	// compaction counters live only in the process that did the writing, so this
+	// is the only place they survive after the data directory is discarded. It is
+	// nil for datasets written before this field existed.
+	Populate *PopulateStats `json:"populate,omitempty"`
+}
+
+// PopulateStats captures how a population run behaved, so a comparison can be
+// made from the retained metadata alone after the data directory is deleted.
+type PopulateStats struct {
+	// Profile is the tuning profile in force, "baseline" or "write-heavy".
+	Profile string `json:"profile"`
+
+	// NewKeys is how many keys this run wrote (excludes pre-existing keys when
+	// extending), and Duration/OverallRate describe how long that took.
+	NewKeys     uint64  `json:"new_keys"`
+	DurationSec float64 `json:"duration_sec"`
+	OverallRate float64 `json:"overall_keys_per_sec"`
+
+	// WriteAmp is what Pebble itself reports. Its denominator is WAL.BytesWritten
+	// (physical WAL bytes, inflated by WAL file recycling), so it is NOT
+	// comparable across profiles that recycle the WAL differently. Prefer
+	// WriteAmpLogical below for comparisons.
+	WriteAmp float64 `json:"write_amp"`
+
+	// WriteAmpLogical is the honest, cross-comparable write amplification: the raw
+	// physical table bytes written by flushes and compactions divided by the
+	// logical bytes the user actually ingested (WAL.BytesIn). Both the numerator
+	// and denominator are recycling-independent.
+	WriteAmpLogical float64 `json:"write_amp_logical"`
+
+	BytesIn         uint64 `json:"bytes_in"`          // Pebble's denominator: WAL.BytesWritten + ingested
+	BytesWritten    uint64 `json:"bytes_written"`     // flushed+compacted, incl. the WAL augmentation Pebble adds
+	TableBytesRaw   uint64 `json:"table_bytes_raw"`   // BytesWritten minus the WAL augmentation: real SST bytes
+	BytesRead       uint64 `json:"bytes_read"`        // bytes read during compaction
+	WALBytesIn      uint64 `json:"wal_bytes_in"`      // logical bytes appended to the WAL (real ingest)
+	WALBytesWritten uint64 `json:"wal_bytes_written"` // physical WAL bytes (recycling-inflated)
+
+	// LogicalBytes is keys*(key+value); OnDiskBytes is Pebble's live+garbage disk
+	// footprint at the end (DiskSpaceUsage), the ratio of the two being the space
+	// amplification.
+	LogicalBytes int64 `json:"logical_bytes"`
+	OnDiskBytes  int64 `json:"on_disk_bytes"`
+
+	// LevelSizes and LevelFiles are the final LSM shape (L0..L6).
+	LevelSizes [7]int64 `json:"level_sizes"`
+	LevelFiles [7]int64 `json:"level_files"`
 }
 
 // SaveMeta writes metadata to a JSON file in the data directory.

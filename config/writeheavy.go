@@ -62,6 +62,12 @@ const (
 
 	// WriteHeavyMinCacheMB is the floor for the block cache, in megabytes.
 	WriteHeavyMinCacheMB = 128
+
+	// WriteHeavyBloomFilterBits is the bits-per-key of the bloom filters kept on
+	// every level except the bottommost. It matches the regular default so the
+	// tables written during the burst are indistinguishable, for read purposes,
+	// from those the normal-mode phase produces.
+	WriteHeavyBloomFilterBits = 10
 )
 
 // ApplyWriteHeavy re-tunes the config for a write-dominated phase.
@@ -118,11 +124,23 @@ func (c *BenchConfig) ApplyWriteHeavy() {
 	split := c.Levels[0].TargetFileSize
 	c.FlushSplitBytes = &split
 
-	// Bloom filters only pay off on reads, yet are rebuilt by every flush and
-	// every compaction.
-	c.BloomFilterBits = intPtr(0)
+	// Keep bloom filters on every level except the bottommost. They are a write
+	// cost during this phase — rebuilt by every flush and every compaction — but
+	// the sstables written here outlive it: once the database is reopened under
+	// the regular settings the tables are still there, and if they carried no
+	// filter the reads that follow would have none until each table is eventually
+	// rewritten, which for the settled lower levels is rarely. Paying the filters
+	// now buys read-ready tables for the normal-mode phase that follows.
+	//
+	// The bottommost level is exempt, matching the default policy (bloom on every
+	// level but the last). Its filters are the largest, since it holds the bulk of
+	// the keys, and the least useful, since a point lookup only reaches it once
+	// every level above has been checked and missed. Leaving them off there is
+	// where nearly all of the filter's write cost is avoided while the levels that
+	// actually gate reads keep theirs.
+	c.BloomFilterBits = intPtr(WriteHeavyBloomFilterBits)
 	for i := range c.Levels {
-		c.Levels[i].NoFilter = true
+		c.Levels[i].NoFilter = false
 		c.Levels[i].BloomFilterBits = nil
 	}
 }

@@ -443,6 +443,8 @@ func (d *v2DB) Metrics() *metrics.DBMetrics {
 		BytesWritten:      total.TableBytesFlushed + total.TableBytesCompacted + total.BlobBytesFlushed + total.BlobBytesCompacted,
 		BytesRead:         total.TableBytesRead,
 		BytesIn:           total.TableBytesIn,
+		WALBytesIn:        m.WAL.BytesIn,
+		WALBytesWritten:   m.WAL.BytesWritten,
 		CompactionCount:   m.Compact.Count,
 		CompactionDebt:    m.Compact.EstimatedDebt,
 		CompactionsActive: m.Compact.NumInProgress,

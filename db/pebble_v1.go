@@ -432,6 +432,8 @@ func (d *v1DB) Metrics() *metrics.DBMetrics {
 		BytesWritten:      total.BytesFlushed + total.BytesCompacted,
 		BytesRead:         total.BytesRead,
 		BytesIn:           total.BytesIn,
+		WALBytesIn:        m.WAL.BytesIn,
+		WALBytesWritten:   m.WAL.BytesWritten,
 		CompactionCount:   m.Compact.Count,
 		CompactionDebt:    m.Compact.EstimatedDebt,
 		CompactionsActive: m.Compact.NumInProgress,

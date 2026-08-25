@@ -96,7 +96,12 @@ func runInit(c *cli.Context) error {
 	}
 	defer cleanup()
 
-	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, sync, existing)
+	profile := "baseline"
+	if c.Bool(writeHeavyFlag.Name) {
+		profile = "write-heavy"
+	}
+
+	meta, err := datagen.Populate(database, targetBytes, cfg.Benchmark.KeySize, cfg.Benchmark.ValueSize, batchSize, sync, profile, existing)
 	if err != nil {
 		return err
 	}

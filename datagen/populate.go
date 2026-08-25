@@ -22,28 +22,41 @@ type progressPoint struct {
 
 // Populate fills the database to approximately the target size.
 // If existing is non-nil, population resumes from the existing key count.
-func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize int, sync bool, existing *Meta) (*Meta, error) {
-	// Check current size
-	m := database.Metrics()
-	currentSize := int64(m.DiskSpaceUsage)
-	if currentSize >= targetBytes {
-		log.Printf("Database already at %s (target %s), skipping population",
-			formatBytes(currentSize), formatBytes(targetBytes))
-		if existing != nil {
-			return existing, nil
-		}
-		totalKeys := uint64(currentSize) / uint64(keySize+valueSize)
-		return &Meta{TotalKeys: totalKeys, KeySize: keySize, ValueSize: valueSize}, nil
-	}
+func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize int, sync bool, profile string, existing *Meta) (*Meta, error) {
+	// Progress and the stop condition are driven by the logical volume of data
+	// written (keys * entry size), not by Pebble's DiskSpaceUsage. The latter
+	// includes the WAL, obsolete and zombie files that are deleted asynchronously
+	// after compactions, so it is both non-monotonic and inflated by transient
+	// garbage. Using it would (a) make progress bounce up and down and (b) let a
+	// write-heavy run (more compaction churn -> more zombie files) trip the target
+	// early with less real data than a low-churn baseline, making the two datasets
+	// unequal and the later read/scan comparison unfair.
+	entryBytes := int64(keySize + valueSize)
 
-	// Resume from existing key count
+	// TotalKeys from the saved metadata is the authoritative count of existing
+	// data; DiskSpaceUsage is only reported for context.
 	var startIndex uint64
 	if existing != nil {
 		startIndex = existing.TotalKeys
-		log.Printf("Extending dataset from %d keys (%s) to target %s",
-			startIndex, formatBytes(currentSize), formatBytes(targetBytes))
+	}
+	writtenBytes := int64(startIndex) * entryBytes
+
+	m := database.Metrics()
+	physicalSize := int64(m.DiskSpaceUsage)
+	if writtenBytes >= targetBytes {
+		log.Printf("Database already at %s logical (%s on disk, target %s), skipping population",
+			formatBytes(writtenBytes), formatBytes(physicalSize), formatBytes(targetBytes))
+		if existing != nil {
+			return existing, nil
+		}
+		return &Meta{TotalKeys: startIndex, KeySize: keySize, ValueSize: valueSize}, nil
+	}
+
+	if existing != nil {
+		log.Printf("Extending dataset from %d keys (%s logical, %s on disk) to target %s",
+			startIndex, formatBytes(writtenBytes), formatBytes(physicalSize), formatBytes(targetBytes))
 	} else {
-		log.Printf("Populating database to %s (current: %s)", formatBytes(targetBytes), formatBytes(currentSize))
+		log.Printf("Populating database to %s (current: %s on disk)", formatBytes(targetBytes), formatBytes(physicalSize))
 	}
 
 	var (
@@ -74,11 +87,13 @@ func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize i
 		}
 		batch.Close()
 
+		writtenBytes = int64(totalKeys) * entryBytes
+
 		// Periodic progress check
 		if time.Since(lastLog) > 10*time.Second {
 			now := time.Now()
 			m = database.Metrics()
-			currentSize = int64(m.DiskSpaceUsage)
+			physicalSize = int64(m.DiskSpaceUsage)
 
 			intervalKeys := newKeys - lastLogKeys
 			intervalSec := now.Sub(lastLog).Seconds()
@@ -88,29 +103,24 @@ func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize i
 			points = append(points, progressPoint{
 				elapsed:      now.Sub(startTime),
 				keys:         totalKeys,
-				size:         currentSize,
+				size:         physicalSize,
 				intervalRate: intervalRate,
 				overallRate:  overallRate,
 			})
 
-			log.Printf("Progress: %s / %s (%.1f%%), %d keys, interval %.0f keys/sec, overall %.0f keys/sec",
-				formatBytes(currentSize), formatBytes(targetBytes),
-				float64(currentSize)/float64(targetBytes)*100,
-				totalKeys, intervalRate, overallRate)
+			// Progress and % track logical bytes (monotonic); the on-disk figure
+			// is shown alongside for space-amplification context.
+			log.Printf("Progress: %s / %s (%.1f%%), %d keys, disk %s, interval %.0f keys/sec, overall %.0f keys/sec",
+				formatBytes(writtenBytes), formatBytes(targetBytes),
+				float64(writtenBytes)/float64(targetBytes)*100,
+				totalKeys, formatBytes(physicalSize), intervalRate, overallRate)
 
-			if currentSize >= targetBytes {
-				break
-			}
 			lastLog = now
 			lastLogKeys = newKeys
 		}
 
-		// Fast estimation check every 10K batches
-		if totalKeys%(uint64(batchSize)*10) == 0 {
-			m = database.Metrics()
-			if int64(m.DiskSpaceUsage) >= targetBytes {
-				break
-			}
+		if writtenBytes >= targetBytes {
+			break
 		}
 	}
 
@@ -120,18 +130,38 @@ func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize i
 	}
 
 	m = database.Metrics()
-	finalSize := int64(m.DiskSpaceUsage)
+	finalPhysical := int64(m.DiskSpaceUsage)
+	finalLogical := int64(totalKeys) * entryBytes
 	elapsed := time.Since(startTime)
 	overallRate := float64(newKeys) / elapsed.Seconds()
 
 	// Print final summary
 	fmt.Println()
 	fmt.Println("========== Population Summary ==========")
+	fmt.Printf("  Profile:         %s\n", profile)
 	fmt.Printf("  New Keys:        %d\n", newKeys)
 	fmt.Printf("  Total Keys:      %d\n", totalKeys)
-	fmt.Printf("  Final Size:      %s\n", formatBytes(finalSize))
+	fmt.Printf("  Logical Size:    %s\n", formatBytes(finalLogical))
+	fmt.Printf("  On-Disk Size:    %s\n", formatBytes(finalPhysical))
 	fmt.Printf("  Duration:        %s\n", elapsed.Round(time.Second))
 	fmt.Printf("  Overall Speed:   %.0f keys/sec\n", overallRate)
+	// The raw SST bytes are BytesWritten minus the WAL bytes Pebble folds into its
+	// flushed total, and the honest write amp normalises those by the logical WAL
+	// ingest rather than by the recycling-inflated physical WAL byte count.
+	tableBytesRaw := int64(m.BytesWritten) - int64(m.BytesIn)
+	if tableBytesRaw < 0 {
+		tableBytesRaw = 0
+	}
+	var writeAmpLogical float64
+	if m.WALBytesIn > 0 {
+		writeAmpLogical = float64(tableBytesRaw) / float64(m.WALBytesIn)
+	}
+	fmt.Printf("  Write Amp (logical): %.2f  <- cross-comparable\n", writeAmpLogical)
+	fmt.Printf("  Write Amp (Pebble):  %.2f  (denominator = physical WAL, not comparable)\n", m.WriteAmp)
+	fmt.Printf("  SST Bytes Written:   %s (flush+compaction)\n", formatBytes(tableBytesRaw))
+	fmt.Printf("  Bytes Read:          %s (compaction)\n", formatBytes(int64(m.BytesRead)))
+	fmt.Printf("  WAL Bytes In:        %s (logical ingest)\n", formatBytes(int64(m.WALBytesIn)))
+	fmt.Printf("  WAL Bytes Written:   %s (physical, recycling-inflated)\n", formatBytes(int64(m.WALBytesWritten)))
 	if len(points) > 0 {
 		var minRate, maxRate float64
 		minRate = math.MaxFloat64
@@ -164,6 +194,24 @@ func Populate(database db.DB, targetBytes int64, keySize, valueSize, batchSize i
 		TotalKeys: totalKeys,
 		KeySize:   keySize,
 		ValueSize: valueSize,
+		Populate: &PopulateStats{
+			Profile:      profile,
+			NewKeys:      newKeys,
+			DurationSec:  elapsed.Seconds(),
+			OverallRate:  overallRate,
+			WriteAmp:        m.WriteAmp,
+			WriteAmpLogical: writeAmpLogical,
+			BytesIn:         m.BytesIn,
+			BytesWritten:    m.BytesWritten,
+			TableBytesRaw:   uint64(tableBytesRaw),
+			BytesRead:       m.BytesRead,
+			WALBytesIn:      m.WALBytesIn,
+			WALBytesWritten: m.WALBytesWritten,
+			LogicalBytes:    finalLogical,
+			OnDiskBytes:  finalPhysical,
+			LevelSizes:   m.LevelSizes,
+			LevelFiles:   m.LevelFiles,
+		},
 	}, nil
 }
 
