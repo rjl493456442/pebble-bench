@@ -458,6 +458,7 @@ func (d *v2DB) Metrics() *metrics.DBMetrics {
 		DiskSpaceUsage: m.DiskSpaceUsage(),
 		ReadAmp:        int(m.ReadAmp()),
 		WriteAmp:       total.WriteAmp(),
+
 		// v2 tracks sstable and blob bytes separately.
 		BytesWritten:      total.TableBytesFlushed + total.TableBytesCompacted + total.BlobBytesFlushed + total.BlobBytesCompacted,
 		BytesRead:         total.TableBytesRead,
@@ -469,9 +470,10 @@ func (d *v2DB) Metrics() *metrics.DBMetrics {
 		CompactionsActive: m.Compact.NumInProgress,
 		MemTableSize:      m.MemTable.Size,
 		MemTableCount:     m.MemTable.Count,
-		BlockCacheHits:    m.BlockCache.Hits,
-		BlockCacheMisses:  m.BlockCache.Misses,
-		// v2 renamed the table cache to the file cache.
+
+		// Cache statistics
+		BlockCacheHits:   m.BlockCache.Hits,
+		BlockCacheMisses: m.BlockCache.Misses,
 		TableCacheHits:   m.FileCache.Hits,
 		TableCacheMisses: m.FileCache.Misses,
 		FilterHits:       m.Filter.Hits,
