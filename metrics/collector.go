@@ -34,6 +34,28 @@ type PebbleSnapshot struct {
 	FilterMisses      int64
 	LevelSizes        [7]int64
 	LevelFiles        [7]int64
+	L0Sublevels       []SublevelStat `json:"l0_sublevels,omitempty"`
+
+	// Everything the stage breakdown is computed from, carried across so a
+	// report can decompose the write amplification it prints instead of only
+	// quoting the ratio.
+	Levels          [7]LevelStat `json:"levels"`
+	BaseLevel       int          `json:"base_level"`
+	WALBytesIn      uint64       `json:"wal_bytes_in"`
+	WALBytesWritten uint64       `json:"wal_bytes_written"`
+}
+
+// StageBreakdown decomposes the snapshot's write volume by the step that wrote
+// it. See BuildStageBreakdown for what the rows mean and why they are taken
+// from the level counters.
+func (s PebbleSnapshot) StageBreakdown() StageBreakdown {
+	return BuildStageBreakdown(&DBMetrics{
+		BytesWritten:    s.BytesWritten,
+		WALBytesIn:      s.WALBytesIn,
+		WALBytesWritten: s.WALBytesWritten,
+		Levels:          s.Levels,
+		BaseLevel:       s.BaseLevel,
+	})
 }
 
 // Collector periodically captures Pebble internal metrics.
@@ -113,6 +135,11 @@ func (c *Collector) capture() {
 		FilterMisses:      m.FilterMisses,
 		LevelSizes:        m.LevelSizes,
 		LevelFiles:        m.LevelFiles,
+		L0Sublevels:       m.L0Sublevels,
+		Levels:            m.Levels,
+		BaseLevel:         m.BaseLevel,
+		WALBytesIn:        m.WALBytesIn,
+		WALBytesWritten:   m.WALBytesWritten,
 	}
 
 	c.mu.Lock()

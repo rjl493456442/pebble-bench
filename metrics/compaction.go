@@ -31,6 +31,15 @@ const (
 	// total write amp.
 	CompactionIntraL0
 
+	// CompactionMove is a compaction pebble satisfied by relinking its input
+	// into the destination level instead of rewriting it. Only the manifest is
+	// written, so these cost nothing in bytes and have no fan-in. They are
+	// tracked separately because folding them into the kind they would
+	// otherwise belong to both overstates that kind's byte totals and drags its
+	// fan-in ratio towards zero: a workload writing keys in order produces a
+	// great many of them.
+	CompactionMove
+
 	numCompactionKinds
 )
 
@@ -42,6 +51,8 @@ func (k CompactionKind) String() string {
 		return "Lbase+"
 	case CompactionIntraL0:
 		return "intra-L0"
+	case CompactionMove:
+		return "move"
 	default:
 		return "unknown"
 	}
@@ -84,10 +95,30 @@ type CompactionBucket struct {
 	// Per-compaction geometric coverage = fan_in / output_level_total. Only
 	// recorded when the destination level had a non-zero size at compaction
 	// time (otherwise the sample is undefined).
-	PctCount   int64   `json:"pct_count"`
-	SumPct     float64 `json:"sum_pct"`
-	MinPct     float64 `json:"min_pct"`
-	MaxPct     float64 `json:"max_pct"`
+	PctCount int64   `json:"pct_count"`
+	SumPct   float64 `json:"sum_pct"`
+	MinPct   float64 `json:"min_pct"`
+	MaxPct   float64 `json:"max_pct"`
+
+	// How many L0 sublevels each compaction carried down, recorded only for
+	// kinds that consume L0. This is the payload side of the L0->Lbase step:
+	// the fan-in above says what a drain costs, this says how much it drains
+	// for that cost. Raising L0CompactionThreshold is meant to move it, and
+	// whether it actually does is not a given — a drain stops extending at the
+	// first table another compaction has already claimed, so a deep L0 does not
+	// by itself produce deep drains.
+	SublevelCount int64 `json:"sublevel_count"` // observations contributing below
+	SumSublevels  int64 `json:"sum_sublevels"`
+	MaxSublevels  int64 `json:"max_sublevels"`
+}
+
+// AvgSublevels returns the mean number of L0 sublevels drained per compaction
+// in this bucket, or 0 if no observation carried L0 input.
+func (b CompactionBucket) AvgSublevels() float64 {
+	if b.SublevelCount == 0 {
+		return 0
+	}
+	return float64(b.SumSublevels) / float64(b.SublevelCount)
 }
 
 // AvgFanInRatio returns the mean (fan-in / source-input) ratio across all
@@ -114,6 +145,7 @@ type CompactionStats struct {
 	L0Lbase   CompactionBucket `json:"l0_lbase"`
 	LbasePlus CompactionBucket `json:"lbase_plus"`
 	IntraL0   CompactionBucket `json:"intra_l0"`
+	Move      CompactionBucket `json:"move"`
 }
 
 // CompactionTracker records aggregated per-compaction-kind statistics
@@ -164,10 +196,14 @@ func (t *CompactionTracker) SetLevelBytes(sizes [7]int64) {
 // relevant byte counts from the pebble.CompactionInfo (the metrics package
 // intentionally has no Pebble dependency, so the db package adapts the event
 // for us).
+//
+// sublevels is the L0 overlap depth of the compaction's L0 input, or 0 when it
+// consumed none; zero is not recorded as an observation.
 func (t *CompactionTracker) Record(
 	kind CompactionKind,
 	outputLevel int,
 	l0Bytes, startBytes, fanInBytes, outputBytes uint64,
+	sublevels int,
 	duration time.Duration,
 ) {
 	if kind < 0 || kind >= numCompactionKinds {
@@ -182,10 +218,18 @@ func (t *CompactionTracker) Record(
 	b.FanInBytes += fanInBytes
 	b.OutputBytes += outputBytes
 	b.Duration += duration
+	if sublevels > 0 {
+		b.SublevelCount++
+		b.SumSublevels += int64(sublevels)
+		if int64(sublevels) > b.MaxSublevels {
+			b.MaxSublevels = int64(sublevels)
+		}
+	}
 
-	// intra-L0 has no destination level distinct from its source, so neither
-	// ratio is meaningful here. Stop after the byte accumulators.
-	if kind == CompactionIntraL0 {
+	// intra-L0 has no destination level distinct from its source, and a move
+	// has no fan-in at all, so neither ratio is meaningful for either. Stop
+	// after the byte accumulators.
+	if kind == CompactionIntraL0 || kind == CompactionMove {
 		return
 	}
 
@@ -239,8 +283,9 @@ func (t *CompactionTracker) Stats() CompactionStats {
 		L0Lbase:   t.buckets[CompactionL0Lbase],
 		LbasePlus: t.buckets[CompactionLbasePlus],
 		IntraL0:   t.buckets[CompactionIntraL0],
+		Move:      t.buckets[CompactionMove],
 	}
-	for _, b := range []*CompactionBucket{&out.L0Lbase, &out.LbasePlus, &out.IntraL0} {
+	for _, b := range []*CompactionBucket{&out.L0Lbase, &out.LbasePlus, &out.IntraL0, &out.Move} {
 		if math.IsInf(b.MinFanInRatio, 1) {
 			b.MinFanInRatio = 0
 		}

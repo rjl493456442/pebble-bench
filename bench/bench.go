@@ -68,7 +68,11 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 
 	// Start benchmark workers
 	var (
-		wg        sync.WaitGroup
+		wg = sync.WaitGroup{}
+		// Take the CPU baseline next to the wall clock, so the two cover the
+		// same window and their ratio is the cores kept busy by the run rather
+		// than by whatever setup preceded it.
+		startCPU  = metrics.CPUSeconds()
 		startTime = time.Now()
 		reg       = metrics.NewHistogramRegistry()
 		opsCount  atomic.Int64
@@ -140,6 +144,7 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 
 	wg.Wait()
 	elapsed := time.Since(startTime)
+	cpuSeconds := metrics.CPUSeconds() - startCPU
 	collectorCancel()
 
 	// Final tick to capture remaining data, per operation type.
@@ -166,6 +171,7 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 		},
 		Benchmark:   b.Name(),
 		Duration:    elapsed,
+		CPUSeconds:  cpuSeconds,
 		PebbleFinal: collector.Latest(),
 		ReadAmpAvg:  collector.AvgReadAmp(),
 		ReadAmpMax:  collector.MaxReadAmp(),

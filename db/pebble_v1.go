@@ -355,6 +355,7 @@ func recordV1Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 		return
 	}
 	var l0Bytes, startBytes, fanInBytes uint64
+	var l0Starts, l0Ends [][]byte
 	outputLevel := info.Output.Level
 	for i := range info.Input {
 		lvl := &info.Input[i]
@@ -365,6 +366,14 @@ func recordV1Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 		switch {
 		case lvl.Level == 0:
 			l0Bytes += bytes
+			// Keep the L0 bounds so the sublevel depth this compaction drained
+			// can be reconstructed below. The event does not carry sublevel
+			// numbers, but files inside one sublevel never overlap, so the
+			// maximum overlap among the input tables is that count.
+			for j := range lvl.Tables {
+				l0Starts = append(l0Starts, lvl.Tables[j].Smallest.UserKey)
+				l0Ends = append(l0Ends, lvl.Tables[j].Largest.UserKey)
+			}
 		case lvl.Level == outputLevel:
 			// Input from the output level itself is the "passenger" data — the
 			// existing files in the destination level that get rewritten as a
@@ -380,6 +389,12 @@ func recordV1Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 	}
 	var kind metrics.CompactionKind
 	switch {
+	// A move writes only the manifest. Classify it off the compaction kind
+	// rather than off an empty fan-in: a compaction that merely overlaps no
+	// table in the destination level is not a move, it still reads its input
+	// and writes the result out.
+	case strings.HasSuffix(info.Reason, "move"):
+		kind = metrics.CompactionMove
 	case outputLevel == 0:
 		// Output is L0 → intra-L0 compaction. The "L0 bytes" field carries
 		// total input for the bucket; fan-in is not meaningful here.
@@ -389,7 +404,8 @@ func recordV1Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 	default:
 		kind = metrics.CompactionLbasePlus
 	}
-	t.Record(kind, outputLevel, l0Bytes, startBytes, fanInBytes, outputBytes, info.Duration)
+	t.Record(kind, outputLevel, l0Bytes, startBytes, fanInBytes, outputBytes,
+		overlapDepth(l0Starts, l0Ends), info.Duration)
 }
 
 // v1DB adapts *pebble.DB (v1) to the DB interface.
@@ -446,10 +462,21 @@ func (d *v1DB) Metrics() *metrics.DBMetrics {
 		FilterHits:        m.Filter.Hits,
 		FilterMisses:      m.Filter.Misses,
 	}
+	out.BaseLevel = -1
 	for i, l := range m.Levels {
-		if i < len(out.LevelSizes) {
-			out.LevelSizes[i] = l.Size
-			out.LevelFiles[i] = l.NumFiles
+		if i >= len(out.LevelSizes) {
+			break
+		}
+		out.LevelSizes[i] = l.Size
+		out.LevelFiles[i] = l.NumFiles
+		out.Levels[i] = metrics.LevelStat{
+			BytesFlushed:   l.BytesFlushed,
+			BytesCompacted: l.BytesCompacted,
+			BytesRead:      l.BytesRead,
+			BytesMoved:     l.BytesMoved,
+		}
+		if i > 0 && out.BaseLevel < 0 && l.NumFiles > 0 {
+			out.BaseLevel = i
 		}
 	}
 	return out

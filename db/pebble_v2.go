@@ -1,10 +1,13 @@
 package db
 
 import (
+	"bytes"
+	"cmp"
 	"fmt"
 	"io"
 	"log"
 	"runtime"
+	"slices"
 	"strings"
 
 	pebble "github.com/cockroachdb/pebble/v2"
@@ -370,6 +373,7 @@ func recordV2Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 		return
 	}
 	var l0Bytes, startBytes, fanInBytes uint64
+	var l0Starts, l0Ends [][]byte
 	outputLevel := info.Output.Level
 	for i := range info.Input {
 		lvl := &info.Input[i]
@@ -380,6 +384,14 @@ func recordV2Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 		switch {
 		case lvl.Level == 0:
 			l0Bytes += bytes
+			// Keep the L0 bounds so the sublevel depth this compaction drained
+			// can be reconstructed below. The event does not carry sublevel
+			// numbers, but files inside one sublevel never overlap, so the
+			// maximum overlap among the input tables is that count.
+			for j := range lvl.Tables {
+				l0Starts = append(l0Starts, lvl.Tables[j].Smallest.UserKey)
+				l0Ends = append(l0Ends, lvl.Tables[j].Largest.UserKey)
+			}
 		case lvl.Level == outputLevel:
 			fanInBytes += bytes
 		default:
@@ -392,6 +404,12 @@ func recordV2Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 	}
 	var kind metrics.CompactionKind
 	switch {
+	// A move writes only the manifest. Classify it off the compaction kind
+	// rather than off an empty fan-in: a compaction that merely overlaps no
+	// table in the destination level is not a move, it still reads its input
+	// and writes the result out.
+	case strings.HasSuffix(info.Reason, "move"):
+		kind = metrics.CompactionMove
 	case outputLevel == 0:
 		kind = metrics.CompactionIntraL0
 	case l0Bytes > 0:
@@ -399,7 +417,8 @@ func recordV2Compaction(t *metrics.CompactionTracker, info pebble.CompactionInfo
 	default:
 		kind = metrics.CompactionLbasePlus
 	}
-	t.Record(kind, outputLevel, l0Bytes, startBytes, fanInBytes, outputBytes, info.Duration)
+	t.Record(kind, outputLevel, l0Bytes, startBytes, fanInBytes, outputBytes,
+		overlapDepth(l0Starts, l0Ends), info.Duration)
 }
 
 // v2DB adapts *pebble.DB (v2) to the DB interface.
@@ -458,13 +477,25 @@ func (d *v2DB) Metrics() *metrics.DBMetrics {
 		FilterHits:       m.Filter.Hits,
 		FilterMisses:     m.Filter.Misses,
 	}
+	out.BaseLevel = -1
 	for i, l := range m.Levels {
-		if i < len(out.LevelSizes) {
-			// v2 renamed Size/NumFiles to TablesSize/TablesCount.
-			out.LevelSizes[i] = l.TablesSize
-			out.LevelFiles[i] = l.TablesCount
+		if i >= len(out.LevelSizes) {
+			break
+		}
+		// v2 renamed Size/NumFiles to TablesSize/TablesCount.
+		out.LevelSizes[i] = l.TablesSize
+		out.LevelFiles[i] = l.TablesCount
+		out.Levels[i] = metrics.LevelStat{
+			BytesFlushed:   l.TableBytesFlushed,
+			BytesCompacted: l.TableBytesCompacted,
+			BytesRead:      l.TableBytesRead,
+			BytesMoved:     l.TableBytesMoved,
+		}
+		if i > 0 && out.BaseLevel < 0 && l.TablesCount > 0 {
+			out.BaseLevel = i
 		}
 	}
+	out.L0Sublevels = v2L0Sublevels(d.db)
 	return out
 }
 
@@ -484,3 +515,99 @@ func (b *v2Batch) Commit(sync bool) error {
 }
 
 func (b *v2Batch) Close() error { return b.batch.Close() }
+
+// v2L0Sublevels reconstructs L0's sublevel structure. Pebble reports only the
+// count, but the assignment is reproducible: files are placed oldest first and
+// each goes one sublevel above the highest it overlaps, so files sharing a
+// sublevel never overlap.
+func v2L0Sublevels(db *pebble.DB) []metrics.SublevelStat {
+	all, err := db.SSTables()
+	if err != nil || len(all) == 0 || len(all[0]) == 0 {
+		return nil
+	}
+	files := slices.Clone(all[0])
+	slices.SortFunc(files, func(a, b pebble.SSTableInfo) int {
+		if a.LargestSeqNum != b.LargestSeqNum {
+			return cmp.Compare(a.LargestSeqNum, b.LargestSeqNum)
+		}
+		if a.SmallestSeqNum != b.SmallestSeqNum {
+			return cmp.Compare(a.SmallestSeqNum, b.SmallestSeqNum)
+		}
+		return cmp.Compare(a.FileNum, b.FileNum)
+	})
+
+	type placed struct{ lo, hi []byte }
+	var levels [][]placed
+	// Only the candidate starting at or after lo, and the one before it, can
+	// overlap [lo, hi], since files within a sublevel are disjoint and sorted.
+	overlaps := func(ps []placed, lo, hi []byte) bool {
+		i, _ := slices.BinarySearchFunc(ps, lo, func(p placed, k []byte) int {
+			return bytes.Compare(p.lo, k)
+		})
+		if i < len(ps) && bytes.Compare(ps[i].lo, hi) <= 0 {
+			return true
+		}
+		return i > 0 && bytes.Compare(ps[i-1].hi, lo) >= 0
+	}
+
+	var stats []metrics.SublevelStat
+	var lo, hi []byte
+	for _, f := range files {
+		flo, fhi := f.Smallest.UserKey, f.Largest.UserKey
+		if lo == nil || bytes.Compare(flo, lo) < 0 {
+			lo = flo
+		}
+		if hi == nil || bytes.Compare(fhi, hi) > 0 {
+			hi = fhi
+		}
+		sub := 0
+		for s := len(levels) - 1; s >= 0; s-- {
+			if overlaps(levels[s], flo, fhi) {
+				sub = s + 1
+				break
+			}
+		}
+		for len(levels) <= sub {
+			levels = append(levels, nil)
+			stats = append(stats, metrics.SublevelStat{Sublevel: len(levels) - 1})
+		}
+		i, _ := slices.BinarySearchFunc(levels[sub], flo, func(p placed, k []byte) int {
+			return bytes.Compare(p.lo, k)
+		})
+		levels[sub] = slices.Insert(levels[sub], i, placed{flo, fhi})
+		stats[sub].Files++
+		stats[sub].Size += int64(f.Size)
+	}
+	total := keyFraction(lo, hi, lo, hi)
+	for s := range stats {
+		var covered float64
+		for _, p := range levels[s] {
+			covered += keyFraction(p.lo, p.hi, lo, hi)
+		}
+		if total > 0 {
+			stats[s].Span = covered / total
+		}
+	}
+	return stats
+}
+
+// keyFraction approximates what share of [lo, hi] the range [a, b] covers from
+// the leading bytes of each key. Benchmark keys are sha256-derived, so those
+// bytes are near uniformly distributed and the estimate is fair.
+func keyFraction(a, b, lo, hi []byte) float64 {
+	pos := func(k []byte) float64 {
+		var v, scale float64 = 0, 1
+		for i := 0; i < 8; i++ {
+			scale /= 256
+			if i < len(k) {
+				v += float64(k[i]) * scale
+			}
+		}
+		return v
+	}
+	span := pos(hi) - pos(lo)
+	if span <= 0 {
+		return 0
+	}
+	return (pos(b) - pos(a)) / span
+}

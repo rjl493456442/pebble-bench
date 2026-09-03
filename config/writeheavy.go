@@ -10,43 +10,71 @@ package config
 // only product is a shape that reads better. Merging later, and fewer times,
 // therefore removes rewrites outright.
 //
-// Two of the knobs below are coupled and have to move together. An L0 -> Lbase
-// compaction rewrites the part of Lbase the batch overlaps, so a deep base level
-// drained in small batches is rewritten once per batch, which costs more than
-// the levels the deeper base saves. Raising LBaseMaxBytes alone makes write
-// amplification worse, not better.
+// The values were measured on a mainnet generate-trie run, which has that shape.
+// What came out of it is that the levers are not equally worth pulling. File
+// sizing dominated: at the default 2MB target the run left ~15k files in L0,
+// drove the file-count arm of the L0 score to 30, saturated compaction with tiny
+// rewrites and stalled writes for a third of its wall clock. Base level sizing
+// and L0 depth, which the profile originally leaned on, both measured worse than
+// leaving them near their defaults.
 const (
 	// WriteHeavyLBaseMaxBytes governs how many levels the LSM uses. Pebble picks
 	// the base level by walking up from the deepest non-empty level for as long
 	// as the projected size of that level exceeds this value, and every step up
 	// adds a whole extra level for a byte to be rewritten on its way down.
 	//
-	// The base level moves in whole steps a LevelMultiplier apart, so a value
-	// between two steps buys nothing but a flatter pyramid. This one is sized to
-	// put the base at L5 for a mainnet-sized state, against a default of 64MB
-	// that puts it at L2.
-	WriteHeavyLBaseMaxBytes int64 = 32 << 30
+	// That is the argument for raising it, and it did not survive measurement on
+	// this workload. Against a 64MB base level, raising it to 4GB cost 0.8 bytes per byte accepted on the L0->Lbase step and returned
+	// nothing on the levels below it, which stayed flat at ~1.3 either way.
+	// Data reaches the lower levels by move compaction in this workload, so
+	// there is no fanout to flatten and the deeper base level buys nothing.
+	//
+	// Keeping it low is what makes the drain cheap: an L0->Lbase compaction
+	// writes 1 + lbaseSize/l0Size bytes per byte of L0 it carries down, so the
+	// base level wants to stay small relative to L0.
+	WriteHeavyLBaseMaxBytes int64 = 4 << 30
 
-	// WriteHeavyL0CompactionThreshold lets L0 grow to this many sublevels before
-	// compacting, which keeps write amplification near one for as long as the
-	// backlog lasts and amortises the eventual Lbase rewrite over a much larger
-	// batch.
-	WriteHeavyL0CompactionThreshold = 24
+	// WriteHeavyL0CompactionThreshold sets how deep L0 grows before draining;
+	// the depth reached is roughly half of it, since the fill factor pebble
+	// scores L0 by is 2*sublevels/threshold.
+	//
+	// Depth turned out to be the weakest of these knobs. Raised to 16 it does
+	// deepen L0, but a drain still only carried ~3 sublevels: extending one
+	// stops at the first table another compaction has already claimed, and at
+	// this ingest rate many are. Depth also only pays alongside a large base
+	// level to amortise, which measured worse overall.
+	WriteHeavyL0CompactionThreshold = 4
 
 	// WriteHeavyL0StopWritesThreshold is the hard ceiling on L0 sublevels, past
 	// which writes stop. It has to clear the compaction threshold with room to
 	// spare or writes stall while the backlog drains.
-	WriteHeavyL0StopWritesThreshold = 96
+	WriteHeavyL0StopWritesThreshold = 24
 
 	// WriteHeavyTargetFileSizeL0 is the target size of an L0 file, and only of an
 	// L0 file. Pebble derives FlushSplitBytes from it when that is unset, so the
 	// 2MB used for regular operation shatters a large memtable flush into
-	// hundreds of small tables.
+	// hundreds of small tables. This is the knob that mattered most: raising it
+	// took a run from 134 write stalls to none and moved 5.6x more bytes per
+	// compaction slot.
+	WriteHeavyTargetFileSizeL0 int64 = 16 << 20
+
+	// The levels below L0 also get larger targets than the 4MB-and-doubling
+	// default, flattening out at 128MB.
 	//
-	// The deeper levels deliberately keep their defaults. Compacting into a level
-	// rewrites whichever of its tables the incoming keys overlap, so larger
-	// tables there coarsen the rewrite unit and raise write amplification.
-	WriteHeavyTargetFileSizeL0 int64 = 64 << 20
+	// This is the one place where the profile now contradicts its own earlier
+	// reasoning, which was that a coarser rewrite unit down there raises write
+	// amplification: a narrow key range landing in a 2GB table rewrites 2GB,
+	// where the same range against 32MB tables rewrites a fraction. That
+	// argument still holds for large tables, which is why the ladder stops at
+	// 128MB rather than continuing to double. What it misses is the cost at the
+	// other end: at the default sizes a mainnet run left ~15k files in L0,
+	// which drove the file-count arm of the L0 score to 30, saturated
+	// compaction with tiny rewrites and stalled writes for a third of the run.
+	// These sizes are the compromise measured to avoid that without coarsening
+	// the rewrite unit into the range where it starts costing again.
+	WriteHeavyTargetFileSizeLbase  int64 = 32 << 20
+	WriteHeavyTargetFileSizeLbase1 int64 = 64 << 20
+	WriteHeavyTargetFileSizeDeep   int64 = 128 << 20
 
 	// WriteHeavyMemTableCount is the number of memtables kept in flight, with the
 	// stop-writes threshold at twice that. Memory is budgeted against the
@@ -108,19 +136,21 @@ func (c *BenchConfig) ApplyWriteHeavy() {
 	lbase := WriteHeavyLBaseMaxBytes
 	c.LBaseMaxBytes = &lbase
 
-	// Only L0 gets a larger target. Pebble derives FlushSplitBytes from the L0
-	// target and the target also caps the tables a flush emits, so leaving both
-	// small shatters one memtable flush into a shower of little tables.
-	//
-	// The levels below keep their defaults on purpose. A compaction into Li+1 has
-	// to rewrite whichever of its tables the incoming keys overlap, so larger
-	// tables down there mean a coarser rewrite unit and *more* write
-	// amplification, not less: a narrow key range landing in a 2GB table rewrites
-	// 2GB, where the same range against 32MB tables rewrites a fraction of that.
+	// Pebble derives FlushSplitBytes from the L0 target and the target also caps
+	// the tables a flush emits, so leaving both small shatters one memtable flush
+	// into a shower of little tables.
 	for len(c.Levels) < 7 {
 		c.Levels = append(c.Levels, LevelConfig{})
 	}
+	// The targets are indexed relative to the base level, not by absolute level
+	// number: [0] is L0, [1] is the base level, [2] is base+1, and so on, so this
+	// ladder needs no adjustment when LBaseMaxBytes moves the base level.
 	c.Levels[0].TargetFileSize = WriteHeavyTargetFileSizeL0
+	c.Levels[1].TargetFileSize = WriteHeavyTargetFileSizeLbase
+	c.Levels[2].TargetFileSize = WriteHeavyTargetFileSizeLbase1
+	for i := 3; i < len(c.Levels); i++ {
+		c.Levels[i].TargetFileSize = WriteHeavyTargetFileSizeDeep
+	}
 	split := c.Levels[0].TargetFileSize
 	c.FlushSplitBytes = &split
 

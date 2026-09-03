@@ -16,9 +16,21 @@ type Result struct {
 	Summary     Summary        `json:"summary"`
 	OpSummaries []OpSummary    `json:"op_summaries,omitempty"`
 	PebbleFinal PebbleSnapshot `json:"pebble_final"`
+	CPUSeconds  float64        `json:"cpu_seconds"`
 	ReadAmpAvg  float64        `json:"read_amp_avg"`
 	ReadAmpMax  int            `json:"read_amp_max"`
 	Ticks       []TickRecord   `json:"ticks,omitempty"`
+}
+
+// CPUCoresBusy returns the average number of CPU cores the run kept busy:
+// process CPU time over wall time. Read it against the machine's core count —
+// a run sitting well below it spent its time waiting on the disk, one close to
+// it is bounded by compaction and flush work rather than by the device.
+func (r *Result) CPUCoresBusy() float64 {
+	if r.Duration <= 0 {
+		return 0
+	}
+	return r.CPUSeconds / r.Duration.Seconds()
 }
 
 // OpSummary holds a latency summary for a single operation type (e.g. the
@@ -57,6 +69,12 @@ func PrintSummary(r *Result) {
 	fmt.Println("\n========== Benchmark Results ==========")
 	fmt.Printf("Benchmark:  %s\n", r.Benchmark)
 	fmt.Printf("Duration:   %s\n", r.Duration.Round(time.Second))
+	if r.CPUSeconds > 0 {
+		// Cores busy is the useful half: it says whether the run was held up
+		// by compaction burning CPU or by waiting on the device.
+		fmt.Printf("CPU time:   %s (%.2f cores busy)\n",
+			time.Duration(r.CPUSeconds*float64(time.Second)).Round(time.Second), r.CPUCoresBusy())
+	}
 	fmt.Printf("Total Ops:  %d\n", r.Summary.TotalOps)
 	fmt.Printf("Ops/sec:    %.0f (min: %.0f, max: %.0f)\n", r.Summary.OpsPerSec, r.Summary.OpsPerSecMin, r.Summary.OpsPerSecMax)
 	fmt.Println()
@@ -106,9 +124,12 @@ func PrintSummary(r *Result) {
 		fmt.Printf("    max:           %s\n", ws.MaxTime.Round(time.Millisecond))
 		fmt.Printf("    total:         %s\n", ws.TotalTime.Round(time.Millisecond))
 	}
+	printStageBreakdown(r.PebbleFinal.StageBreakdown())
+	printLevels(r.PebbleFinal)
 	printSyncStats(r.PebbleFinal.SyncStats)
 	printReadStats(r.PebbleFinal.ReadStats)
 	printCompactionStats(r.PebbleFinal.CompactionStats)
+	printL0Sublevels(r.PebbleFinal.L0Sublevels)
 	fmt.Printf("  Block Cache:     %d / %d\n", r.PebbleFinal.BlockCacheHits,
 		r.PebbleFinal.BlockCacheHits+r.PebbleFinal.BlockCacheMisses)
 	fmt.Printf("  Table Cache:     %d / %d\n", r.PebbleFinal.TableCacheHits,
@@ -151,6 +172,9 @@ func WriteMarkdown(path string, r *Result) error {
 	b.WriteString("|--------|-------|\n")
 	b.WriteString(fmt.Sprintf("| Benchmark | %s |\n", r.Benchmark))
 	b.WriteString(fmt.Sprintf("| Duration | %s |\n", r.Duration.Round(time.Second)))
+	if r.CPUSeconds > 0 {
+		b.WriteString(fmt.Sprintf("| CPU time (cores busy) | %.0fs (%.2f) |\n", r.CPUSeconds, r.CPUCoresBusy()))
+	}
 	b.WriteString(fmt.Sprintf("| Total Ops | %d |\n", r.Summary.TotalOps))
 	b.WriteString(fmt.Sprintf("| Ops/sec | %.0f |\n", r.Summary.OpsPerSec))
 	b.WriteString(fmt.Sprintf("| Ops/sec (min) | %.0f |\n", r.Summary.OpsPerSecMin))
@@ -266,6 +290,23 @@ func WriteMarkdown(path string, r *Result) error {
 		}
 	}
 
+	// L0 by sublevel. A sublevel spanning most of the key range is a tiled
+	// layer; one spanning little of it is a narrow column.
+	if subs := r.PebbleFinal.L0Sublevels; len(subs) > 0 {
+		b.WriteString("\n## L0 Sublevels\n\n")
+		b.WriteString("| Sublevel | Files | Size | Span | Avg File |\n")
+		b.WriteString("|----------|-------|------|------|----------|\n")
+		for i := len(subs) - 1; i >= 0; i-- {
+			sl := subs[i]
+			var avg uint64
+			if sl.Files > 0 {
+				avg = uint64(sl.Size / sl.Files)
+			}
+			b.WriteString(fmt.Sprintf("| %d | %d | %s | %.0f%% | %s |\n",
+				sl.Sublevel, sl.Files, FormatSize(uint64(sl.Size)), 100*sl.Span, FormatSize(avg)))
+		}
+	}
+
 	// Time series (if available)
 	if len(r.Ticks) > 0 {
 		b.WriteString("\n## Time Series\n\n")
@@ -308,6 +349,22 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 		b.WriteString(fmt.Sprintf(" %s |", r.Duration.Round(time.Second)))
 	}
 	b.WriteString("\n")
+
+	// CPU time, rendered only when at least one run measured it.
+	hasCPU := false
+	for _, r := range results {
+		if r.CPUSeconds > 0 {
+			hasCPU = true
+			break
+		}
+	}
+	if hasCPU {
+		b.WriteString("| Cores busy |")
+		for _, r := range results {
+			b.WriteString(fmt.Sprintf(" %.2f |", r.CPUCoresBusy()))
+		}
+		b.WriteString("\n")
+	}
 
 	// Total Ops
 	b.WriteString("| Total Ops |")
@@ -469,6 +526,60 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 		b.WriteString("\n")
 	}
 
+	// Write amplification attributed to the step that produced it, in bytes
+	// written per byte accepted, so the rows add up to the amplification and
+	// are comparable across runs of different length.
+	b.WriteString("\n## Write amplification by stage\n\n")
+	b.WriteString("| Stage |")
+	for _, r := range results {
+		b.WriteString(fmt.Sprintf(" %s |", r.Benchmark))
+	}
+	b.WriteString("\n|-------|")
+	for range results {
+		b.WriteString("--------|")
+	}
+	b.WriteString("\n")
+	for _, row := range []struct {
+		name string
+		get  func(StageBreakdown) uint64
+	}{
+		{"WAL", func(s StageBreakdown) uint64 { return s.WAL }},
+		{"flush -> L0", func(s StageBreakdown) uint64 { return s.FlushToL0 }},
+		{"intra-L0", func(s StageBreakdown) uint64 { return s.IntraL0 }},
+		{"above Lbase", func(s StageBreakdown) uint64 { return s.AboveLbase }},
+		{"L0 -> Lbase", func(s StageBreakdown) uint64 { return s.L0ToLbase }},
+		{"Lbase -> bottom", func(s StageBreakdown) uint64 { return s.LbaseToBot }},
+		{"total", func(s StageBreakdown) uint64 { return s.Total }},
+	} {
+		fired := false
+		for _, r := range results {
+			if st := r.PebbleFinal.StageBreakdown(); row.get(st) > 0 {
+				fired = true
+				break
+			}
+		}
+		if !fired {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("| %s |", row.name))
+		for _, r := range results {
+			st := r.PebbleFinal.StageBreakdown()
+			b.WriteString(fmt.Sprintf(" %.3f |", st.PerByte(row.get(st))))
+		}
+		b.WriteString("\n")
+	}
+	// Bytes carried down by relinking rather than rewriting, which no total
+	// above reveals and which dominates on workloads writing keys in order.
+	b.WriteString("| moved (relinked) |")
+	for _, r := range results {
+		var moved uint64
+		for i := range r.PebbleFinal.Levels {
+			moved += r.PebbleFinal.Levels[i].BytesMoved
+		}
+		b.WriteString(fmt.Sprintf(" %s |", FormatSize(moved)))
+	}
+	b.WriteString("\n")
+
 	// Per-kind compaction breakdown. The L0→Lbase fan-in ratio is the headline
 	// number for "did this tuning change the random-hash passenger problem".
 	b.WriteString("\n## Compactions (by kind)\n\n")
@@ -487,6 +598,7 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 		ratio bool
 	}{
 		{"L0->Lbase", func(r *Result) CompactionBucket { return r.PebbleFinal.CompactionStats.L0Lbase }, true},
+		{"move", func(r *Result) CompactionBucket { return r.PebbleFinal.CompactionStats.Move }, false},
 		{"Lbase+", func(r *Result) CompactionBucket { return r.PebbleFinal.CompactionStats.LbasePlus }, true},
 		{"intra-L0", func(r *Result) CompactionBucket { return r.PebbleFinal.CompactionStats.IntraL0 }, false},
 	} {
@@ -533,6 +645,23 @@ func WriteMultiMarkdown(path string, results []*Result) error {
 				b.WriteString(fmt.Sprintf("| %s (pct of dst) |", k.label))
 				for _, r := range results {
 					b.WriteString(fmt.Sprintf(" %.2f%% |", k.get(r).AvgPctOfOutput()*100))
+				}
+				b.WriteString("\n")
+			}
+			// Sublevels drained per compaction — the payload side of the row
+			// above, and the one that says whether a raised L0 depth is being
+			// consumed. Only added if at least one result carried L0 input.
+			hasSub := false
+			for _, r := range results {
+				if k.get(r).SublevelCount > 0 {
+					hasSub = true
+					break
+				}
+			}
+			if hasSub {
+				b.WriteString(fmt.Sprintf("| %s (sublevels/op) |", k.label))
+				for _, r := range results {
+					b.WriteString(fmt.Sprintf(" %.2f |", k.get(r).AvgSublevels()))
 				}
 				b.WriteString("\n")
 			}
@@ -593,6 +722,17 @@ func PrintComparison(baseline, current *Result) {
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Table Cache Hits", baseline.PebbleFinal.TableCacheHits, current.PebbleFinal.TableCacheHits, pctDiff(float64(baseline.PebbleFinal.TableCacheHits), float64(current.PebbleFinal.TableCacheHits)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Filter Hits", baseline.PebbleFinal.FilterHits, current.PebbleFinal.FilterHits, pctDiff(float64(baseline.PebbleFinal.FilterHits), float64(current.PebbleFinal.FilterHits)))
 
+	// Where the write amplification went. A total that barely moves can still
+	// hide a large shift between stages, and a stage that moved is the only
+	// thing a config change can be credited with.
+	printStageComparison(baseline.PebbleFinal.StageBreakdown(), current.PebbleFinal.StageBreakdown())
+
+	// Bytes each level carried down for free, by relinking rather than
+	// rewriting. On a workload writing keys in order this is often the largest
+	// single difference between two configurations, and it does not show up in
+	// any of the totals above.
+	printMovedComparison(baseline.PebbleFinal, current.PebbleFinal)
+
 	// VFS syscall counts and average latencies. Ops that never fired on either
 	// side (e.g. fdatasync/sync_file_range/fallocate/readahead on macOS) are
 	// skipped to keep the table focused.
@@ -635,6 +775,7 @@ func PrintComparison(baseline, current *Result) {
 		b, c  CompactionBucket
 	}{
 		{"L0->Lbase", baseline.PebbleFinal.CompactionStats.L0Lbase, current.PebbleFinal.CompactionStats.L0Lbase},
+		{"move", baseline.PebbleFinal.CompactionStats.Move, current.PebbleFinal.CompactionStats.Move},
 		{"Lbase+", baseline.PebbleFinal.CompactionStats.LbasePlus, current.PebbleFinal.CompactionStats.LbasePlus},
 		{"intra-L0", baseline.PebbleFinal.CompactionStats.IntraL0, current.PebbleFinal.CompactionStats.IntraL0},
 	} {
@@ -664,6 +805,15 @@ func PrintComparison(baseline, current *Result) {
 				cPct := k.c.AvgPctOfOutput() * 100
 				fmt.Printf("%-20s %19.2f%% %19.2f%% %10s\n", "  "+k.label+" pct of dst",
 					bPct, cPct, pctDiff(bPct, cPct))
+			}
+			// Sublevels drained per compaction. Read alongside the WA ratio:
+			// the ratio is what a drain costs, this is what it carries, and a
+			// change to L0 depth settings is only working if this moves.
+			if k.b.SublevelCount > 0 || k.c.SublevelCount > 0 {
+				bSub := k.b.AvgSublevels()
+				cSub := k.c.AvgSublevels()
+				fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  "+k.label+" sublevels/op",
+					bSub, cSub, pctDiff(bSub, cSub))
 			}
 		}
 	}
@@ -780,6 +930,7 @@ func printReadStats(s ReadStats) {
 func printCompactionStats(s CompactionStats) {
 	fmt.Println("  Compactions (by kind):")
 	printCompactionBucket("L0->Lbase", s.L0Lbase, "Lbase/L0")
+	printCompactionBucket("move", s.Move, "")
 	printCompactionBucket("Lbase+   ", s.LbasePlus, "next/start")
 	if s.IntraL0.Count > 0 {
 		fmt.Printf("    %-16s count=%-8d input=%-10s output=%s\n",
@@ -787,6 +938,32 @@ func printCompactionStats(s CompactionStats) {
 			FormatSize(s.IntraL0.L0Bytes), FormatSize(s.IntraL0.OutputBytes))
 	} else {
 		fmt.Printf("    %-16s count=0\n", "intra-L0")
+	}
+}
+
+// printL0Sublevels prints L0's shape at the end of the run, deepest sublevel
+// first. Pebble reports only the sublevel count, so the breakdown is rebuilt
+// from the tables' key ranges.
+//
+// The span is what makes the count readable. A sublevel spanning most of the
+// key space is a full tiled layer, and a drain that reaches it carries the
+// whole width down. One spanning a sliver is a narrow column that a few
+// overlapping flushes stacked up, and depth made of those is not depth a drain
+// can use — which is how L0 ends up holding a great many files in very few
+// sublevels under keys written in order.
+func printL0Sublevels(subs []SublevelStat) {
+	if len(subs) == 0 {
+		return
+	}
+	fmt.Printf("  L0 by sublevel (%d):\n", len(subs))
+	for i := len(subs) - 1; i >= 0; i-- {
+		sl := subs[i]
+		var avg uint64
+		if sl.Files > 0 {
+			avg = uint64(sl.Size / sl.Files)
+		}
+		fmt.Printf("    sub %-3d files=%-6d size=%-10s span=%5.1f%%  avg-file=%s\n",
+			sl.Sublevel, sl.Files, FormatSize(uint64(sl.Size)), 100*sl.Span, FormatSize(avg))
 	}
 }
 
@@ -823,6 +1000,13 @@ func printCompactionBucket(label string, b CompactionBucket, ratioLabel string) 
 		fmt.Printf("    %-16s                  pct[fan-in/dst]=%.2f%%(avg) min=%.2f%% max=%.2f%% (n=%d)\n",
 			"", b.AvgPctOfOutput()*100, b.MinPct*100, b.MaxPct*100, b.PctCount)
 	}
+	if b.SublevelCount > 0 {
+		// How much L0 each drain actually carried, against the depth L0 was
+		// allowed to reach. An average far below L0CompactionThreshold/2 means
+		// raising that threshold is buying depth the drains are not consuming.
+		fmt.Printf("    %-16s                  sublevels/drain=%.2f(avg) max=%d (n=%d)\n",
+			"", b.AvgSublevels(), b.MaxSublevels, b.SublevelCount)
+	}
 }
 
 // writeCompactionMarkdown emits the per-kind compaction breakdown as rows in
@@ -837,6 +1021,7 @@ func writeCompactionMarkdown(b *strings.Builder, s CompactionStats) {
 		ratio  bool
 	}{
 		{"L0->Lbase", s.L0Lbase, true},
+		{"move", s.Move, false},
 		{"Lbase+", s.LbasePlus, true},
 		{"intra-L0", s.IntraL0, false},
 	} {
@@ -854,6 +1039,10 @@ func writeCompactionMarkdown(b *strings.Builder, s CompactionStats) {
 			if k.bucket.PctCount > 0 {
 				b.WriteString(fmt.Sprintf("| %s (pct of dst avg / min / max) | %.2f%% / %.2f%% / %.2f%% |\n",
 					k.label, k.bucket.AvgPctOfOutput()*100, k.bucket.MinPct*100, k.bucket.MaxPct*100))
+			}
+			if k.bucket.SublevelCount > 0 {
+				b.WriteString(fmt.Sprintf("| %s (sublevels per drain avg / max) | %.2f / %d |\n",
+					k.label, k.bucket.AvgSublevels(), k.bucket.MaxSublevels))
 			}
 		} else {
 			b.WriteString(fmt.Sprintf("| %s (n / bytes) | %d / %s |\n",
@@ -885,4 +1074,132 @@ func usToStr(us int64) string {
 		return fmt.Sprintf("%.2fms", float64(us)/1000)
 	}
 	return fmt.Sprintf("%dus", us)
+}
+
+// printStageBreakdown attributes the run's write amplification to the steps
+// that produced it. A ratio on its own says a run wrote five times what it
+// accepted; this says which step wrote it, which is the only form the number
+// can be acted on in.
+//
+// The rows are bytes written per byte accepted, so they add up to the write
+// amplification itself. A non-zero residual means they failed to account for
+// the total and the table should not be trusted until it is explained.
+func printStageBreakdown(s StageBreakdown) {
+	if s.Accepted == 0 {
+		return
+	}
+	fmt.Println("  Write amplification by stage:")
+	for _, row := range []struct {
+		name  string
+		bytes uint64
+		skip  bool // rows that are noise at zero rather than informative
+	}{
+		{name: "WAL", bytes: s.WAL},
+		{name: "flush -> L0", bytes: s.FlushToL0},
+		{name: "intra-L0", bytes: s.IntraL0, skip: true},
+		{name: "above Lbase", bytes: s.AboveLbase, skip: true},
+		{name: "L0 -> Lbase", bytes: s.L0ToLbase},
+		{name: "Lbase -> bottom", bytes: s.LbaseToBot},
+	} {
+		if row.bytes == 0 && row.skip {
+			continue
+		}
+		fmt.Printf("    %-16s %10s %8.3f\n", row.name, FormatSize(row.bytes), s.PerByte(row.bytes))
+	}
+	fmt.Printf("    %-16s %10s %8.3f\n", "total", FormatSize(s.Total), s.WriteAmp())
+	if s.Residual != 0 {
+		fmt.Printf("    %-16s %10s          (rows do not account for the total)\n",
+			"UNACCOUNTED", FormatSize(uint64(abs64(s.Residual))))
+	}
+}
+
+// abs64 returns the magnitude of v, for reporting a residual whose sign only
+// says which way the accounting missed.
+func abs64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// printLevels shows the shape of the LSM and what each level cost.
+//
+// The moved column is the one to read first on a workload writing keys in
+// order. A move compaction relinks a table into the level below rather than
+// rewriting it, which pebble can do whenever the table overlaps nothing down
+// there, so those bytes descended for free. When they are a large share of the
+// total, the target file sizes are the most consequential setting in the
+// config: a wider key range per table is a table that can no longer be moved.
+func printLevels(s PebbleSnapshot) {
+	var any bool
+	for i := range s.Levels {
+		if s.LevelFiles[i] > 0 || s.Levels[i].BytesFlushed+s.Levels[i].BytesCompacted > 0 {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return
+	}
+	fmt.Println("  Levels:")
+	fmt.Printf("    %-6s %8s %10s %10s %10s %10s\n", "level", "files", "size", "written", "read", "moved")
+	for i := range s.Levels {
+		l := s.Levels[i]
+		if s.LevelFiles[i] == 0 && l.BytesFlushed+l.BytesCompacted == 0 {
+			continue
+		}
+		name := fmt.Sprintf("L%d", i)
+		if i == s.BaseLevel {
+			name += "*"
+		}
+		fmt.Printf("    %-6s %8d %10s %10s %10s %10s\n", name, s.LevelFiles[i],
+			FormatSize(uint64(s.LevelSizes[i])), FormatSize(l.BytesFlushed+l.BytesCompacted),
+			FormatSize(l.BytesRead), FormatSize(l.BytesMoved))
+	}
+	if s.BaseLevel > 0 {
+		fmt.Println("    (* is the base level, the one L0 drains into; moved bytes were relinked, not written)")
+	}
+}
+
+// printStageComparison lays the two runs' write-amplification decompositions
+// side by side, in bytes written per byte accepted so the rows are comparable
+// across runs of different length.
+func printStageComparison(b, c StageBreakdown) {
+	if b.Accepted == 0 || c.Accepted == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("Write amplification by stage (per byte accepted):")
+	for _, row := range []struct {
+		name string
+		b, c uint64
+	}{
+		{"WAL", b.WAL, c.WAL},
+		{"flush -> L0", b.FlushToL0, c.FlushToL0},
+		{"intra-L0", b.IntraL0, c.IntraL0},
+		{"above Lbase", b.AboveLbase, c.AboveLbase},
+		{"L0 -> Lbase", b.L0ToLbase, c.L0ToLbase},
+		{"Lbase -> bottom", b.LbaseToBot, c.LbaseToBot},
+		{"total", b.Total, c.Total},
+	} {
+		bv, cv := b.PerByte(row.b), c.PerByte(row.c)
+		if bv == 0 && cv == 0 {
+			continue
+		}
+		fmt.Printf("%-20s %20.3f %20.3f %10s\n", "  "+row.name, bv, cv, pctDiff(bv, cv))
+	}
+}
+
+// printMovedComparison totals the bytes each run relinked instead of rewriting.
+func printMovedComparison(b, c PebbleSnapshot) {
+	var bMoved, cMoved uint64
+	for i := range b.Levels {
+		bMoved += b.Levels[i].BytesMoved
+		cMoved += c.Levels[i].BytesMoved
+	}
+	if bMoved == 0 && cMoved == 0 {
+		return
+	}
+	fmt.Printf("%-20s %20s %20s %10s\n", "  moved (relinked)",
+		FormatSize(bMoved), FormatSize(cMoved), pctDiff(float64(bMoved), float64(cMoved)))
 }
