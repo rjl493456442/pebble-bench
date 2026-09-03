@@ -827,10 +827,7 @@ func avgSourcePerCompaction(b CompactionBucket) uint64 {
 	if b.Count == 0 {
 		return 0
 	}
-	source := b.L0Bytes
-	if b.StartBytes > 0 {
-		source = b.StartBytes
-	}
+	source := sourceBytes(b)
 	return source / uint64(b.Count)
 }
 
@@ -848,10 +845,7 @@ func avgFanInPerCompaction(b CompactionBucket) uint64 {
 // AvgFanInRatio (the per-compaction mean) — the weighted variant is robust to
 // outlier large/small compactions and is the better summary statistic.
 func weightedFanInRatio(b CompactionBucket) float64 {
-	source := b.L0Bytes
-	if b.StartBytes > 0 {
-		source = b.StartBytes
-	}
+	source := sourceBytes(b)
 	if source == 0 {
 		return 0
 	}
@@ -978,10 +972,7 @@ func printCompactionBucket(label string, b CompactionBucket, ratioLabel string) 
 		fmt.Printf("    %-16s count=0\n", label)
 		return
 	}
-	source := b.L0Bytes
-	if b.StartBytes > 0 {
-		source = b.StartBytes
-	}
+	source := sourceBytes(b)
 	// Sum-based fan-in: total fan-in bytes divided by total source bytes,
 	// independent of per-compaction variance. Often more meaningful than the
 	// per-compaction mean when compactions vary in size.
@@ -1028,10 +1019,7 @@ func writeCompactionMarkdown(b *strings.Builder, s CompactionStats) {
 		if k.bucket.Count == 0 {
 			continue
 		}
-		source := k.bucket.L0Bytes
-		if k.bucket.StartBytes > 0 {
-			source = k.bucket.StartBytes
-		}
+		source := sourceBytes(k.bucket)
 		if k.ratio {
 			b.WriteString(fmt.Sprintf("| %s (n / src / fan-in / WA ratio) | %d / %s / %s / %.2f |\n",
 				k.label, k.bucket.Count, FormatSize(source), FormatSize(k.bucket.FanInBytes),
@@ -1202,4 +1190,15 @@ func printMovedComparison(b, c PebbleSnapshot) {
 	}
 	fmt.Printf("%-20s %20s %20s %10s\n", "  moved (relinked)",
 		FormatSize(bMoved), FormatSize(cMoved), pctDiff(float64(bMoved), float64(cMoved)))
+}
+
+// sourceBytes returns the bytes a bucket's compactions read from the level they
+// started in: L0 for drains and intra-L0, the start level for everything else.
+// Each compaction fills exactly one of the two counters, so the sum is right
+// for every kind. It matters for the move bucket in particular, which mixes
+// moves out of L0 with moves between lower levels; preferring one counter over
+// the other there drops whichever kind is in the minority, and shows up as a
+// move total that wrote more than it read.
+func sourceBytes(b CompactionBucket) uint64 {
+	return b.L0Bytes + b.StartBytes
 }
