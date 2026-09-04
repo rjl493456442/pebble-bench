@@ -46,3 +46,5 @@ require (
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 )
+
+replace github.com/cockroachdb/pebble/v2 => github.com/rjl493456442/pebble/v2 v2.0.0-20260904013620-732953b46c55

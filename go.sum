@@ -26,8 +26,6 @@ github.com/cockroachdb/metamorphic v0.0.0-20231108215700-4ba948b56895 h1:XANOgPY
 github.com/cockroachdb/metamorphic v0.0.0-20231108215700-4ba948b56895/go.mod h1:aPd7gM9ov9M8v32Yy5NJrDyOcD8z642dqs+F0CeNXfA=
 github.com/cockroachdb/pebble v1.1.5 h1:5AAWCBWbat0uE0blr8qzufZP5tBjkRyy/jWe1QWLnvw=
 github.com/cockroachdb/pebble v1.1.5/go.mod h1:17wO9el1YEigxkP/YtV8NtCivQDgoCyBg5c4VR/eOWo=
-github.com/cockroachdb/pebble/v2 v2.1.5 h1:1ziHpaSau6qCXnFpQX3EBOH14yPHA8W66vKxsyrgXgs=
-github.com/cockroachdb/pebble/v2 v2.1.5/go.mod h1:Reo1RTniv1UjVTAu/Fv74y5i3kJ5gmVrPhO9UtFiKn8=
 github.com/cockroachdb/redact v1.1.5 h1:u1PMllDkdFfPWaNGMyLD1+so+aq3uUItthCFqzwPJ30=
 github.com/cockroachdb/redact v1.1.5/go.mod h1:BVNblN9mBWFyMyqK1k3AAiSxhvhfK2oOZZ2lK+dpvRg=
 github.com/cockroachdb/swiss v0.0.0-20260820225851-333444432258 h1:IJ+uNItEm0qx9FE2AgIc1PMsCUtk8nbSIzhQE1t5GWw=
@@ -84,6 +82,8 @@ github.com/prometheus/common v0.42.0 h1:EKsfXEYo4JpWMHH5cg+KOUWeuJSov1Id8zGR8eeI
 github.com/prometheus/common v0.42.0/go.mod h1:xBwqVerjNdUDjgODMpudtOMwlOwf2SaTr1yjz4b7Zbc=
 github.com/prometheus/procfs v0.10.1 h1:kYK1Va/YMlutzCGazswoHKo//tZVlFpKYh+PymziUAg=
 github.com/prometheus/procfs v0.10.1/go.mod h1:nwNm2aOCAYw8uTR/9bWRREkZFxAUcWzPHWJq+XBB/FM=
+github.com/rjl493456442/pebble/v2 v2.0.0-20260904013620-732953b46c55 h1:bo3x6f9WUNEI0Up8pLHeHGfwcnNU8Zo1AMKpWHF5pqA=
+github.com/rjl493456442/pebble/v2 v2.0.0-20260904013620-732953b46c55/go.mod h1:Reo1RTniv1UjVTAu/Fv74y5i3kJ5gmVrPhO9UtFiKn8=
 github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=

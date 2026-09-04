@@ -209,6 +209,17 @@ func buildV2Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 	} else {
 		opts.Experimental.CompactionDebtConcurrency = 1 << 28
 	}
+	// Candidate growth limits for L0 compactions. These are the fork's
+	// Experimental options; zero leaves pebble at its defaults.
+	if cfg.L0CompactionMaxBytes != nil {
+		opts.Experimental.L0CompactionMaxBytes = *cfg.L0CompactionMaxBytes
+	}
+	if cfg.L0CompactionGrowthLimit != nil {
+		opts.Experimental.L0CompactionGrowthLimit = *cfg.L0CompactionGrowthLimit
+	}
+	if cfg.L0CompactionGrowthMinBytes != nil {
+		opts.Experimental.L0CompactionGrowthMinBytes = *cfg.L0CompactionGrowthMinBytes
+	}
 
 	// Log the resolved configuration.
 	log.Printf("Pebble v2 config: data_dir=%s cache=%dMB max_open_files=%d read_only=%v",
@@ -217,6 +228,20 @@ func buildV2Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 		memTableSize/(1024*1024), memTableCount, memTableStopWrites)
 	log.Printf("  Compaction: max_concurrent=%d l0_threshold=%d l0_stop_writes=%d",
 		maxConcurrentCompactions, l0CompactionThreshold, l0StopWritesThreshold)
+	// Logged before pebble fills in its defaults, so show the effective values
+	// rather than the zeros that select them.
+	limMax, limGrowth, limMin := opts.Experimental.L0CompactionMaxBytes, opts.Experimental.L0CompactionGrowthLimit, opts.Experimental.L0CompactionGrowthMinBytes
+	if limMax == 0 {
+		limMax = 500 << 20
+	}
+	if limGrowth <= 0 {
+		limGrowth = 1.5
+	}
+	if limMin == 0 {
+		limMin = 100 << 20
+	}
+	log.Printf("  L0 candidate limits: max_bytes=%s growth_limit=%.2fx growth_min_bytes=%s",
+		metrics.FormatSize(limMax), limGrowth, metrics.FormatSize(limMin))
 	log.Printf("  Sync: bytes_per_sync=%dKB wal_bytes_per_sync=%dKB",
 		bytesPerSync/1024, walBytesPerSync/1024)
 	log.Printf("  WAL: disabled=%v no_sync=%v",

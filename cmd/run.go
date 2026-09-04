@@ -32,6 +32,10 @@ var (
 		Name:  "num-ops",
 		Usage: "maximum number of operations",
 	}
+	settleFlag = &cli.DurationFlag{
+		Name:  "settle",
+		Usage: "after the workers stop, wait up to this long for compaction to settle before the final snapshot (e.g. 30m); 0 snapshots immediately",
+	}
 	outputFlag = &cli.StringFlag{
 		Name:  "output",
 		Value: "terminal",
@@ -59,6 +63,7 @@ Available benchmarks:
 			durationFlag,
 			concurrencyFlag,
 			numOpsFlag,
+			settleFlag,
 			outputFlag,
 			outputFileFlag,
 		),
@@ -87,6 +92,9 @@ func runBenchmark(c *cli.Context) error {
 	}
 	if v := c.Uint64(numOpsFlag.Name); v > 0 {
 		cfg.Benchmark.NumOps = v
+	}
+	if v := c.Duration(settleFlag.Name); v > 0 {
+		cfg.Benchmark.Settle = v
 	}
 
 	// Validate

@@ -142,6 +142,9 @@ func buildV1Options(cfg *config.BenchConfig) (*pebble.Options, func()) {
 	} else {
 		opts.Experimental.CompactionDebtConcurrency = 1 << 28
 	}
+	if cfg.L0CompactionMaxBytes != nil || cfg.L0CompactionGrowthLimit != nil || cfg.L0CompactionGrowthMinBytes != nil {
+		log.Printf("WARNING: l0_compaction_max_bytes / growth_limit / growth_min_bytes are pebble v2 only; ignored under v1")
+	}
 
 	// Log the resolved configuration.
 	log.Printf("Pebble v1 config: data_dir=%s cache=%dMB max_open_files=%d read_only=%v",

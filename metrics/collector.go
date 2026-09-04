@@ -157,6 +157,17 @@ func (c *Collector) Latest() PebbleSnapshot {
 	return c.snapshots[len(c.snapshots)-1]
 }
 
+// Snapshot captures the store's metrics now and returns them, rather than
+// handing back the last tick, so a caller marking a boundary gets the state at
+// the boundary and not up to one interval before it.
+func (c *Collector) Snapshot() PebbleSnapshot {
+	c.capture()
+	return c.Latest()
+}
+
+// Interval returns the collection period.
+func (c *Collector) Interval() time.Duration { return c.interval }
+
 // AvgReadAmp returns the mean read amplification across all captured snapshots.
 // Unlike the final snapshot, this reflects the read amplification sustained over
 // the whole run (matching how Pebble's own ycsb benchmark reports r-amp).

@@ -122,6 +122,24 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 			return err
 		}
 		cfg.CompactionDebtConcurrency = &v
+	case "l0_compaction_max_bytes":
+		v, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return err
+		}
+		cfg.L0CompactionMaxBytes = &v
+	case "l0_compaction_growth_limit":
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		cfg.L0CompactionGrowthLimit = &v
+	case "l0_compaction_growth_min_bytes":
+		v, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return err
+		}
+		cfg.L0CompactionGrowthMinBytes = &v
 	case "read_sampling_multiplier":
 		v, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
@@ -184,6 +202,12 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 	// Benchmark settings
 	case "benchmark.name":
 		cfg.Benchmark.Name = value
+	case "benchmark.settle":
+		v, err := time.ParseDuration(value)
+		if err != nil {
+			return err
+		}
+		cfg.Benchmark.Settle = v
 	case "benchmark.duration":
 		v, err := time.ParseDuration(value)
 		if err != nil {
@@ -243,13 +267,14 @@ func ListOverrideKeys() []string {
 		"max_concurrent_compactions", "l0_compaction_threshold",
 		"l0_stop_writes_threshold", "l0_compaction_concurrency",
 		"compaction_debt_concurrency", "read_sampling_multiplier",
+		"l0_compaction_max_bytes", "l0_compaction_growth_limit", "l0_compaction_growth_min_bytes",
 		"l_base_max_bytes", "level_multiplier", "flush_split_bytes",
 		"target_file_size_l0", "target_file_size_l1", "target_file_size_l2",
 		"target_file_size_l3", "target_file_size_l4", "target_file_size_l5",
 		"target_file_size_l6",
 		"bytes_per_sync", "wal_bytes_per_sync", "disable_wal", "no_sync",
 		"bloom_filter_bits",
-		"benchmark.name", "benchmark.duration", "benchmark.concurrency",
+		"benchmark.name", "benchmark.duration", "benchmark.settle", "benchmark.concurrency",
 		"benchmark.num_ops", "benchmark.key_size", "benchmark.value_size",
 		"benchmark.batch_size", "benchmark.read_percent",
 		"benchmark.init_target_size",

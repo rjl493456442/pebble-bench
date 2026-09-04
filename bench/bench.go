@@ -145,6 +145,23 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 	wg.Wait()
 	elapsed := time.Since(startTime)
 	cpuSeconds := metrics.CPUSeconds() - startCPU
+
+	// Snapshot the store as the workers left it. Throughput and latency are
+	// judged on the window that just closed; with a settle configured the final
+	// store snapshot is taken later, once compaction has caught up with the
+	// backlog the workers left, so that the write amplification covers the
+	// whole cost of the run and not just the part paid before the clock stopped.
+	atStop := collector.Snapshot()
+	final := atStop
+	var (
+		atStopPtr *metrics.PebbleSnapshot
+		settle    *metrics.SettleResult
+	)
+	if benchCfg.Settle > 0 {
+		settle = waitForSettle(collector, benchCfg.Settle, atStop)
+		final = collector.Latest()
+		atStopPtr = &atStop
+	}
 	collectorCancel()
 
 	// Final tick to capture remaining data, per operation type.
@@ -169,15 +186,17 @@ func Execute(database db.DB, syncWrites bool, cfg *config.BenchConfig, meta *dat
 			Pebble:    database.ResolvedConfig(),
 			Benchmark: cfg.Benchmark,
 		},
-		Benchmark:   b.Name(),
-		Duration:    elapsed,
-		CPUSeconds:  cpuSeconds,
-		PebbleFinal: collector.Latest(),
-		ReadAmpAvg:  collector.AvgReadAmp(),
-		ReadAmpMax:  collector.MaxReadAmp(),
-		Ticks:       tickRecords,
-		OpSummaries: opSummaries,
-		Summary:     metrics.BuildSummary(total.Cumulative, elapsed),
+		Benchmark:    b.Name(),
+		Duration:     elapsed,
+		CPUSeconds:   cpuSeconds,
+		PebbleFinal:  final,
+		PebbleAtStop: atStopPtr,
+		Settle:       settle,
+		ReadAmpAvg:   collector.AvgReadAmp(),
+		ReadAmpMax:   collector.MaxReadAmp(),
+		Ticks:        tickRecords,
+		OpSummaries:  opSummaries,
+		Summary:      metrics.BuildSummary(total.Cumulative, elapsed),
 	}
 
 	// Compute ops/sec min/max from tick records
@@ -221,4 +240,50 @@ func IncrementOps(ctx context.Context) bool {
 		return false
 	}
 	return true
+}
+
+// waitForSettle blocks until the store has no compaction left to do, or until
+// timeout, whichever is first, and reports how it went.
+//
+// Settled means no compaction is running and the estimated debt is zero. The
+// debt estimate can stay a little above zero on a shape pebble has no reason to
+// compact further, so a debt that has not moved across three consecutive ticks
+// with nothing running counts as settled too.
+func waitForSettle(collector *metrics.Collector, timeout time.Duration, atStop metrics.PebbleSnapshot) *metrics.SettleResult {
+	log.Printf("Workers done; waiting up to %s for compaction to settle (debt %s, %d active)",
+		timeout, metrics.FormatSize(atStop.CompactionDebt), atStop.CompactionsActive)
+	start := time.Now()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(collector.Interval())
+	defer ticker.Stop()
+
+	result := &metrics.SettleResult{DebtBefore: atStop.CompactionDebt}
+	lastDebt, stable := atStop.CompactionDebt, 0
+	for {
+		select {
+		case <-timer.C:
+			snap := collector.Snapshot()
+			result.Duration, result.TimedOut, result.DebtAfter = time.Since(start), true, snap.CompactionDebt
+			log.Printf("Settle timed out after %s: debt %s, %d compactions active",
+				result.Duration.Round(time.Second), metrics.FormatSize(snap.CompactionDebt), snap.CompactionsActive)
+			return result
+		case <-ticker.C:
+			snap := collector.Snapshot()
+			collector.LogLatest()
+			settled := snap.CompactionsActive == 0 && snap.CompactionDebt == 0
+			if snap.CompactionsActive == 0 && snap.CompactionDebt == lastDebt {
+				stable++
+			} else {
+				stable = 0
+			}
+			lastDebt = snap.CompactionDebt
+			if settled || stable >= 3 {
+				result.Duration, result.DebtAfter = time.Since(start), snap.CompactionDebt
+				log.Printf("Compaction settled after %s (debt %s -> %s)", result.Duration.Round(time.Second),
+					metrics.FormatSize(atStop.CompactionDebt), metrics.FormatSize(snap.CompactionDebt))
+				return result
+			}
+		}
+	}
 }

@@ -31,6 +31,13 @@ type BenchConfig struct {
 	L0StopWritesThreshold     *int    `yaml:"l0_stop_writes_threshold"`
 	L0CompactionConcurrency   *int    `yaml:"l0_compaction_concurrency"`
 	CompactionDebtConcurrency *uint64 `yaml:"compaction_debt_concurrency"`
+
+	// Bounds on how far one L0 compaction candidate may grow by stacking
+	// sublevels; pebble v2 with the fork's Experimental options only. Zero or
+	// unset keeps pebble's defaults of 500MB, 1.5x and 100MB.
+	L0CompactionMaxBytes       *uint64  `yaml:"l0_compaction_max_bytes"`
+	L0CompactionGrowthLimit    *float64 `yaml:"l0_compaction_growth_limit"`
+	L0CompactionGrowthMinBytes *uint64  `yaml:"l0_compaction_growth_min_bytes"`
 	ReadSamplingMultiplier    *int64  `yaml:"read_sampling_multiplier"`
 
 	// LBaseMaxBytes sets the target maximum bytes for Lbase. Pebble's dynamic
@@ -106,6 +113,11 @@ type LevelConfig struct {
 type BenchmarkConfig struct {
 	Name        string        `yaml:"name"`
 	Duration    time.Duration `yaml:"duration"`
+	// Settle is how long, at most, to wait after the workers stop for
+	// compaction to catch up before the final snapshot is taken. Zero takes
+	// the snapshot immediately, which understates the write amplification of
+	// any run that ends with a compaction backlog.
+	Settle time.Duration `yaml:"settle"`
 	Concurrency int           `yaml:"concurrency"`
 	NumOps      uint64        `yaml:"num_ops"`
 	KeySize     int           `yaml:"key_size"`

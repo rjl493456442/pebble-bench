@@ -16,10 +16,15 @@ type Result struct {
 	Summary     Summary        `json:"summary"`
 	OpSummaries []OpSummary    `json:"op_summaries,omitempty"`
 	PebbleFinal PebbleSnapshot `json:"pebble_final"`
-	CPUSeconds  float64        `json:"cpu_seconds"`
-	ReadAmpAvg  float64        `json:"read_amp_avg"`
-	ReadAmpMax  int            `json:"read_amp_max"`
-	Ticks       []TickRecord   `json:"ticks,omitempty"`
+	// Set when the run waited for compaction to settle: the store as the
+	// workers left it, and how the wait went. PebbleFinal is then the settled
+	// state.
+	PebbleAtStop *PebbleSnapshot `json:"pebble_at_stop,omitempty"`
+	Settle       *SettleResult   `json:"settle,omitempty"`
+	CPUSeconds   float64         `json:"cpu_seconds"`
+	ReadAmpAvg   float64         `json:"read_amp_avg"`
+	ReadAmpMax   int             `json:"read_amp_max"`
+	Ticks        []TickRecord    `json:"ticks,omitempty"`
 }
 
 // CPUCoresBusy returns the average number of CPU cores the run kept busy:
@@ -69,6 +74,10 @@ func PrintSummary(r *Result) {
 	fmt.Println("\n========== Benchmark Results ==========")
 	fmt.Printf("Benchmark:  %s\n", r.Benchmark)
 	fmt.Printf("Duration:   %s\n", r.Duration.Round(time.Second))
+	if r.Settle != nil {
+		fmt.Printf("Settle:     %s (debt %s -> %s%s)\n", r.Settle.Duration.Round(time.Second),
+			FormatSize(r.Settle.DebtBefore), FormatSize(r.Settle.DebtAfter), settleNote(r.Settle))
+	}
 	if r.CPUSeconds > 0 {
 		// Cores busy is the useful half: it says whether the run was held up
 		// by compaction burning CPU or by waiting on the device.
@@ -103,7 +112,12 @@ func PrintSummary(r *Result) {
 	fmt.Println()
 	fmt.Println("Pebble Metrics:")
 	fmt.Printf("  Disk Usage:      %s\n", FormatSize(r.PebbleFinal.DiskUsage))
-	fmt.Printf("  Write Amp:       %.2f\n", r.PebbleFinal.WriteAmp)
+	if r.PebbleAtStop != nil {
+		fmt.Printf("  Write Amp:       %.2f settled (%.2f when the workers stopped)\n",
+			r.PebbleFinal.WriteAmp, r.PebbleAtStop.WriteAmp)
+	} else {
+		fmt.Printf("  Write Amp:       %.2f\n", r.PebbleFinal.WriteAmp)
+	}
 	fmt.Printf("  Bytes Written:   %s (read %s, logical-in %s)\n",
 		FormatSize(r.PebbleFinal.BytesWritten), FormatSize(r.PebbleFinal.BytesRead), FormatSize(r.PebbleFinal.BytesIn))
 	fmt.Printf("  Read Amp:        %d (avg %.1f, max %d)\n",
@@ -176,6 +190,10 @@ func WriteMarkdown(path string, r *Result) error {
 	b.WriteString("|--------|-------|\n")
 	b.WriteString(fmt.Sprintf("| Benchmark | %s |\n", r.Benchmark))
 	b.WriteString(fmt.Sprintf("| Duration | %s |\n", r.Duration.Round(time.Second)))
+	if r.Settle != nil {
+		b.WriteString(fmt.Sprintf("| Settle | %s (debt %s -> %s%s) |\n", r.Settle.Duration.Round(time.Second),
+			FormatSize(r.Settle.DebtBefore), FormatSize(r.Settle.DebtAfter), settleNote(r.Settle)))
+	}
 	if r.CPUSeconds > 0 {
 		b.WriteString(fmt.Sprintf("| CPU time (cores busy) | %.0fs (%.2f) |\n", r.CPUSeconds, r.CPUCoresBusy()))
 	}
@@ -216,6 +234,9 @@ func WriteMarkdown(path string, r *Result) error {
 	b.WriteString("|--------|-------|\n")
 	b.WriteString(fmt.Sprintf("| Disk Usage | %s |\n", FormatSize(r.PebbleFinal.DiskUsage)))
 	b.WriteString(fmt.Sprintf("| Write Amplification | %.2f |\n", r.PebbleFinal.WriteAmp))
+	if r.PebbleAtStop != nil {
+		b.WriteString(fmt.Sprintf("| Write Amplification (when workers stopped) | %.2f |\n", r.PebbleAtStop.WriteAmp))
+	}
 	b.WriteString(fmt.Sprintf("| Bytes Written | %s |\n", FormatSize(r.PebbleFinal.BytesWritten)))
 	b.WriteString(fmt.Sprintf("| Bytes Read (compaction) | %s |\n", FormatSize(r.PebbleFinal.BytesRead)))
 	b.WriteString(fmt.Sprintf("| Bytes In (logical) | %s |\n", FormatSize(r.PebbleFinal.BytesIn)))
@@ -687,6 +708,9 @@ func PrintComparison(baseline, current *Result) {
 
 	fmt.Printf("%-20s %20s %20s %10s\n", "Benchmark", baseline.Benchmark, current.Benchmark, "")
 	fmt.Printf("%-20s %20s %20s %10s\n", "Duration", baseline.Duration.Round(time.Second).String(), current.Duration.Round(time.Second).String(), "")
+	if baseline.Settle != nil || current.Settle != nil {
+		fmt.Printf("%-20s %20s %20s %10s\n", "Settle", settleCell(baseline.Settle), settleCell(current.Settle), "")
+	}
 	fmt.Printf("%-20s %20d %20d %10s\n", "Total Ops", baseline.Summary.TotalOps, current.Summary.TotalOps, pctDiff(float64(baseline.Summary.TotalOps), float64(current.Summary.TotalOps)))
 	fmt.Printf("%-20s %20.0f %20.0f %10s\n", "Ops/sec", baseline.Summary.OpsPerSec, current.Summary.OpsPerSec, pctDiff(baseline.Summary.OpsPerSec, current.Summary.OpsPerSec))
 	fmt.Printf("%-20s %20.0f %20.0f %10s\n", "Ops/sec (min)", baseline.Summary.OpsPerSecMin, current.Summary.OpsPerSecMin, pctDiff(baseline.Summary.OpsPerSecMin, current.Summary.OpsPerSecMin))
@@ -714,6 +738,18 @@ func PrintComparison(baseline, current *Result) {
 	fmt.Println("Pebble Metrics:")
 	fmt.Printf("%-20s %20s %20s %10s\n", "  Disk Usage", FormatSize(baseline.PebbleFinal.DiskUsage), FormatSize(current.PebbleFinal.DiskUsage), pctDiff(float64(baseline.PebbleFinal.DiskUsage), float64(current.PebbleFinal.DiskUsage)))
 	fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  Write Amp", baseline.PebbleFinal.WriteAmp, current.PebbleFinal.WriteAmp, pctDiff(baseline.PebbleFinal.WriteAmp, current.PebbleFinal.WriteAmp))
+	if baseline.PebbleAtStop != nil || current.PebbleAtStop != nil {
+		// The figure at the moment the workers stopped, before any settle. Where
+		// the two rows differ is the backlog the run had left unpaid.
+		bw, cw := baseline.PebbleFinal.WriteAmp, current.PebbleFinal.WriteAmp
+		if baseline.PebbleAtStop != nil {
+			bw = baseline.PebbleAtStop.WriteAmp
+		}
+		if current.PebbleAtStop != nil {
+			cw = current.PebbleAtStop.WriteAmp
+		}
+		fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  Write Amp (at stop)", bw, cw, pctDiff(bw, cw))
+	}
 	fmt.Printf("%-20s %20s %20s %10s\n", "  Bytes Written", FormatSize(baseline.PebbleFinal.BytesWritten), FormatSize(current.PebbleFinal.BytesWritten), pctDiff(float64(baseline.PebbleFinal.BytesWritten), float64(current.PebbleFinal.BytesWritten)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Read Amp (final)", baseline.PebbleFinal.ReadAmplification, current.PebbleFinal.ReadAmplification, pctDiff(float64(baseline.PebbleFinal.ReadAmplification), float64(current.PebbleFinal.ReadAmplification)))
 	fmt.Printf("%-20s %20.1f %20.1f %10s\n", "  Read Amp (avg)", baseline.ReadAmpAvg, current.ReadAmpAvg, pctDiff(baseline.ReadAmpAvg, current.ReadAmpAvg))
@@ -1248,4 +1284,20 @@ func shortStallReason(reason string) string {
 		return reason[:16]
 	}
 	return reason
+}
+
+// settleNote annotates a settle result that did not reach a settled state.
+func settleNote(s *SettleResult) string {
+	if s != nil && s.TimedOut {
+		return ", timed out"
+	}
+	return ""
+}
+
+// settleCell renders a settle result for one column of the comparison.
+func settleCell(s *SettleResult) string {
+	if s == nil {
+		return "-"
+	}
+	return s.Duration.Round(time.Second).String() + settleNote(s)
 }
