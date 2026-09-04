@@ -540,7 +540,7 @@ func (d *v2DB) Metrics() *metrics.DBMetrics {
 			out.BaseLevel = i
 		}
 	}
-	out.L0Sublevels = v2L0Sublevels(d.db)
+	out.L0Sublevels, out.L0Shape = v2L0Sublevels(d.db)
 	return out
 }
 
@@ -565,10 +565,10 @@ func (b *v2Batch) Close() error { return b.batch.Close() }
 // count, but the assignment is reproducible: files are placed oldest first and
 // each goes one sublevel above the highest it overlaps, so files sharing a
 // sublevel never overlap.
-func v2L0Sublevels(db *pebble.DB) []metrics.SublevelStat {
+func v2L0Sublevels(db *pebble.DB) ([]metrics.SublevelStat, metrics.L0Shape) {
 	all, err := db.SSTables()
 	if err != nil || len(all) == 0 || len(all[0]) == 0 {
-		return nil
+		return nil, metrics.L0Shape{}
 	}
 	files := slices.Clone(all[0])
 	slices.SortFunc(files, func(a, b pebble.SSTableInfo) int {
@@ -581,7 +581,6 @@ func v2L0Sublevels(db *pebble.DB) []metrics.SublevelStat {
 		return cmp.Compare(a.FileNum, b.FileNum)
 	})
 
-	type placed struct{ lo, hi []byte }
 	var levels [][]placed
 	// Only the candidate starting at or after lo, and the one before it, can
 	// overlap [lo, hi], since files within a sublevel are disjoint and sorted.
@@ -633,7 +632,63 @@ func v2L0Sublevels(db *pebble.DB) []metrics.SublevelStat {
 			stats[s].Span = covered / total
 		}
 	}
-	return stats
+	return stats, l0Shape(levels)
+}
+
+// placed is an L0 file's user key range, inclusive at both ends.
+type placed struct{ lo, hi []byte }
+
+// l0Shape measures the alignment of adjacent sublevels; see metrics.L0Shape.
+// levels holds each sublevel's files sorted by lo, disjoint within a sublevel,
+// with every file in sublevel s >= 1 overlapping at least one file in s-1,
+// which is how the reconstruction assigns sublevels in the first place.
+func l0Shape(levels [][]placed) metrics.L0Shape {
+	var shape metrics.L0Shape
+	var fanoutSum, aligned int64
+	for s := range levels {
+		shape.Files += int64(len(levels[s]))
+		if s == 0 {
+			continue
+		}
+		below := levels[s-1]
+		for _, p := range levels[s] {
+			// Files below are disjoint and sorted, so those overlapping p are
+			// contiguous: from the last one starting at or before p.hi, back
+			// while they still reach p.lo.
+			j, _ := slices.BinarySearchFunc(below, p.hi, func(q placed, k []byte) int {
+				return bytes.Compare(q.lo, k)
+			})
+			// j is the first file starting after p.hi (or one starting exactly
+			// at p.hi, which overlaps); step back to the last candidate.
+			if j == len(below) || bytes.Compare(below[j].lo, p.hi) > 0 {
+				j--
+			}
+			var n int64
+			onEdge := false
+			for ; j >= 0 && bytes.Compare(below[j].hi, p.lo) >= 0; j-- {
+				n++
+				if bytes.Equal(below[j].lo, p.lo) {
+					onEdge = true
+				}
+			}
+			if n == 0 {
+				continue
+			}
+			shape.Measured++
+			fanoutSum += n
+			if n > shape.StepFanoutMax {
+				shape.StepFanoutMax = n
+			}
+			if onEdge {
+				aligned++
+			}
+		}
+	}
+	if shape.Measured > 0 {
+		shape.StepFanout = float64(fanoutSum) / float64(shape.Measured)
+		shape.AlignedStarts = float64(aligned) / float64(shape.Measured)
+	}
+	return shape
 }
 
 // keyFraction approximates what share of [lo, hi] the range [a, b] covers from

@@ -147,7 +147,7 @@ func PrintSummary(r *Result) {
 	printSyncStats(r.PebbleFinal.SyncStats)
 	printReadStats(r.PebbleFinal.ReadStats)
 	printCompactionStats(r.PebbleFinal.CompactionStats)
-	printL0Sublevels(r.PebbleFinal.L0Sublevels)
+	printL0Sublevels(r.PebbleFinal.L0Sublevels, r.PebbleFinal.L0Shape)
 	fmt.Printf("  Block Cache:     %d / %d\n", r.PebbleFinal.BlockCacheHits,
 		r.PebbleFinal.BlockCacheHits+r.PebbleFinal.BlockCacheMisses)
 	fmt.Printf("  Table Cache:     %d / %d\n", r.PebbleFinal.TableCacheHits,
@@ -333,6 +333,10 @@ func WriteMarkdown(path string, r *Result) error {
 			}
 			b.WriteString(fmt.Sprintf("| %d | %d | %s | %.0f%% | %s |\n",
 				sl.Sublevel, sl.Files, FormatSize(uint64(sl.Size)), 100*sl.Span, FormatSize(avg)))
+		}
+		if sh := r.PebbleFinal.L0Shape; sh.Measured > 0 {
+			b.WriteString(fmt.Sprintf("\nAlignment: a file overlaps %.2f files in the sublevel below (max %d); %.0f%% start on a shared edge (n=%d).\n",
+				sh.StepFanout, sh.StepFanoutMax, 100*sh.AlignedStarts, sh.Measured))
 		}
 	}
 
@@ -753,6 +757,12 @@ func PrintComparison(baseline, current *Result) {
 	fmt.Printf("%-20s %20s %20s %10s\n", "  Bytes Written", FormatSize(baseline.PebbleFinal.BytesWritten), FormatSize(current.PebbleFinal.BytesWritten), pctDiff(float64(baseline.PebbleFinal.BytesWritten), float64(current.PebbleFinal.BytesWritten)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Read Amp (final)", baseline.PebbleFinal.ReadAmplification, current.PebbleFinal.ReadAmplification, pctDiff(float64(baseline.PebbleFinal.ReadAmplification), float64(current.PebbleFinal.ReadAmplification)))
 	fmt.Printf("%-20s %20.1f %20.1f %10s\n", "  Read Amp (avg)", baseline.ReadAmpAvg, current.ReadAmpAvg, pctDiff(baseline.ReadAmpAvg, current.ReadAmpAvg))
+	if bs, cs := baseline.PebbleFinal.L0Shape, current.PebbleFinal.L0Shape; bs.Measured > 0 || cs.Measured > 0 {
+		// Files per step is the width a drain gains per sublevel it stacks;
+		// the base level bytes it rewrites scale with it.
+		fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  L0 files/step", bs.StepFanout, cs.StepFanout, pctDiff(bs.StepFanout, cs.StepFanout))
+		fmt.Printf("%-20s %19.0f%% %19.0f%% %10s\n", "  L0 aligned starts", 100*bs.AlignedStarts, 100*cs.AlignedStarts, pctDiff(bs.AlignedStarts, cs.AlignedStarts))
+	}
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Compactions", baseline.PebbleFinal.CompactionCount, current.PebbleFinal.CompactionCount, pctDiff(float64(baseline.PebbleFinal.CompactionCount), float64(current.PebbleFinal.CompactionCount)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Flushes", baseline.PebbleFinal.FlushStats.Count, current.PebbleFinal.FlushStats.Count, pctDiff(float64(baseline.PebbleFinal.FlushStats.Count), float64(current.PebbleFinal.FlushStats.Count)))
 	bAvg := float64(baseline.PebbleFinal.FlushStats.AvgTime().Milliseconds())
@@ -997,7 +1007,7 @@ func printCompactionStats(s CompactionStats) {
 // overlapping flushes stacked up, and depth made of those is not depth a drain
 // can use — which is how L0 ends up holding a great many files in very few
 // sublevels under keys written in order.
-func printL0Sublevels(subs []SublevelStat) {
+func printL0Sublevels(subs []SublevelStat, shape L0Shape) {
 	if len(subs) == 0 {
 		return
 	}
@@ -1010,6 +1020,12 @@ func printL0Sublevels(subs []SublevelStat) {
 		}
 		fmt.Printf("    sub %-3d files=%-6d size=%-10s span=%5.1f%%  avg-file=%s\n",
 			sl.Sublevel, sl.Files, FormatSize(uint64(sl.Size)), 100*sl.Span, FormatSize(avg))
+	}
+	if shape.Measured > 0 {
+		// How the sublevels line up, which sets how wide a drain grows per
+		// sublevel it stacks: 1.0 files per step is a shared grid.
+		fmt.Printf("    alignment: a file overlaps %.2f files in the sublevel below (max %d); %.0f%% start on a shared edge (n=%d)\n",
+			shape.StepFanout, shape.StepFanoutMax, 100*shape.AlignedStarts, shape.Measured)
 	}
 }
 

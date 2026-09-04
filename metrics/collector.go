@@ -35,6 +35,7 @@ type PebbleSnapshot struct {
 	LevelSizes        [7]int64
 	LevelFiles        [7]int64
 	L0Sublevels       []SublevelStat `json:"l0_sublevels,omitempty"`
+	L0Shape           L0Shape        `json:"l0_shape"`
 
 	// Everything the stage breakdown is computed from, carried across so a
 	// report can decompose the write amplification it prints instead of only
@@ -136,6 +137,7 @@ func (c *Collector) capture() {
 		LevelSizes:        m.LevelSizes,
 		LevelFiles:        m.LevelFiles,
 		L0Sublevels:       m.L0Sublevels,
+		L0Shape:           m.L0Shape,
 		Levels:            m.Levels,
 		BaseLevel:         m.BaseLevel,
 		WALBytesIn:        m.WALBytesIn,

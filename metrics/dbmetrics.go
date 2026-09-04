@@ -44,6 +44,7 @@ type DBMetrics struct {
 	// column. A workload writing keys in order produces the former, and can
 	// leave L0 holding thousands of files at a depth of one or two.
 	L0Sublevels []SublevelStat
+	L0Shape     L0Shape
 }
 
 // LevelStat holds one level's cumulative byte counters.
@@ -67,6 +68,33 @@ type SublevelStat struct {
 	Files    int64   `json:"files"`
 	Size     int64   `json:"size"`
 	Span     float64 `json:"span"` // share of L0's key range this sublevel covers
+}
+
+// L0Shape measures how well the files of adjacent sublevels line up, which is
+// what decides how wide an L0->Lbase compaction grows as it stacks sublevels.
+//
+// A candidate that adds a sublevel must take every older file its key range
+// touches. If files sit on a shared grid, that is exactly one file per
+// sublevel and the candidate stays a column; if edges are staggered, it is
+// two or more, the range widens, and the next sublevel down widens it again.
+// The base level bytes rewritten per byte of L0 carried down scale with that
+// width, so StepFanout is the geometric factor behind the drain's write
+// amplification and the collisions between concurrent drains.
+type L0Shape struct {
+	Files    int64 `json:"files"`    // files in L0
+	Measured int64 `json:"measured"` // files with a sublevel below them, ie not in sublevel 0
+
+	// StepFanout is the mean number of files a file overlaps in the sublevel
+	// directly below it. 1.0 means the grid is shared; each further 1.0 is
+	// one more file the drain must take per sublevel it descends.
+	StepFanout    float64 `json:"step_fanout"`
+	StepFanoutMax int64   `json:"step_fanout_max"`
+
+	// AlignedStarts is the share of measured files whose first key is also
+	// the first key of a file they overlap in the sublevel below: a shared
+	// edge. Near 1.0 when flushes cut only at the shared barriers, and low
+	// when they also cut at the base level's file edges, which move.
+	AlignedStarts float64 `json:"aligned_starts"`
 }
 
 // MetricsSource is implemented by anything that can report a normalized
