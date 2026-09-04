@@ -335,8 +335,8 @@ func WriteMarkdown(path string, r *Result) error {
 				sl.Sublevel, sl.Files, FormatSize(uint64(sl.Size)), 100*sl.Span, FormatSize(avg)))
 		}
 		if sh := r.PebbleFinal.L0Shape; sh.Measured > 0 {
-			b.WriteString(fmt.Sprintf("\nAlignment: a file overlaps %.2f files in the sublevel below (max %d); %.0f%% start on a shared edge (n=%d).\n",
-				sh.StepFanout, sh.StepFanoutMax, 100*sh.AlignedStarts, sh.Measured))
+			b.WriteString(fmt.Sprintf("\nAlignment: a file overlaps %.2f files in the sublevel below (max %d); %.0f%% start on a shared edge; range grows x%.2f per sublevel stacked (max x%.1f) (n=%d).\n",
+				sh.StepFanout, sh.StepFanoutMax, 100*sh.AlignedStarts, sh.StepWidening, sh.StepWideningMax, sh.Measured))
 		}
 	}
 
@@ -762,6 +762,7 @@ func PrintComparison(baseline, current *Result) {
 		// the base level bytes it rewrites scale with it.
 		fmt.Printf("%-20s %20.2f %20.2f %10s\n", "  L0 files/step", bs.StepFanout, cs.StepFanout, pctDiff(bs.StepFanout, cs.StepFanout))
 		fmt.Printf("%-20s %19.0f%% %19.0f%% %10s\n", "  L0 aligned starts", 100*bs.AlignedStarts, 100*cs.AlignedStarts, pctDiff(bs.AlignedStarts, cs.AlignedStarts))
+		fmt.Printf("%-20s %19.2fx %19.2fx %10s\n", "  L0 widening/step", bs.StepWidening, cs.StepWidening, pctDiff(bs.StepWidening, cs.StepWidening))
 	}
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Compactions", baseline.PebbleFinal.CompactionCount, current.PebbleFinal.CompactionCount, pctDiff(float64(baseline.PebbleFinal.CompactionCount), float64(current.PebbleFinal.CompactionCount)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Flushes", baseline.PebbleFinal.FlushStats.Count, current.PebbleFinal.FlushStats.Count, pctDiff(float64(baseline.PebbleFinal.FlushStats.Count), float64(current.PebbleFinal.FlushStats.Count)))
@@ -1024,8 +1025,8 @@ func printL0Sublevels(subs []SublevelStat, shape L0Shape) {
 	if shape.Measured > 0 {
 		// How the sublevels line up, which sets how wide a drain grows per
 		// sublevel it stacks: 1.0 files per step is a shared grid.
-		fmt.Printf("    alignment: a file overlaps %.2f files in the sublevel below (max %d); %.0f%% start on a shared edge (n=%d)\n",
-			shape.StepFanout, shape.StepFanoutMax, 100*shape.AlignedStarts, shape.Measured)
+		fmt.Printf("    alignment: a file overlaps %.2f files in the sublevel below (max %d); %.0f%% start on a shared edge; range grows x%.2f per sublevel stacked (max x%.1f) (n=%d)\n",
+			shape.StepFanout, shape.StepFanoutMax, 100*shape.AlignedStarts, shape.StepWidening, shape.StepWideningMax, shape.Measured)
 	}
 }
 

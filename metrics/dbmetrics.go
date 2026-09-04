@@ -95,6 +95,16 @@ type L0Shape struct {
 	// edge. Near 1.0 when flushes cut only at the shared barriers, and low
 	// when they also cut at the base level's file edges, which move.
 	AlignedStarts float64 `json:"aligned_starts"`
+
+	// StepWidening is what the drain actually pays for: the mean factor by
+	// which a file's key range grows once the files it overlaps in the
+	// sublevel below are taken with it. 1.0 means a candidate stays a column
+	// as it stacks; 1.5 means each sublevel it descends widens it by half.
+	// It differs from StepFanout on nested grids: a 16MB file over two 8MB
+	// files has a fanout of 2 and a widening of 1.0, and it is the widening
+	// that sets how much of the base level the drain rewrites.
+	StepWidening    float64 `json:"step_widening"`
+	StepWideningMax float64 `json:"step_widening_max"`
 }
 
 // MetricsSource is implemented by anything that can report a normalized

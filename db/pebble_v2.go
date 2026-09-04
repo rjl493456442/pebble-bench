@@ -632,7 +632,7 @@ func v2L0Sublevels(db *pebble.DB) ([]metrics.SublevelStat, metrics.L0Shape) {
 			stats[s].Span = covered / total
 		}
 	}
-	return stats, l0Shape(levels)
+	return stats, l0Shape(levels, lo, hi)
 }
 
 // placed is an L0 file's user key range, inclusive at both ends.
@@ -642,9 +642,11 @@ type placed struct{ lo, hi []byte }
 // levels holds each sublevel's files sorted by lo, disjoint within a sublevel,
 // with every file in sublevel s >= 1 overlapping at least one file in s-1,
 // which is how the reconstruction assigns sublevels in the first place.
-func l0Shape(levels [][]placed) metrics.L0Shape {
+func l0Shape(levels [][]placed, lo, hi []byte) metrics.L0Shape {
 	var shape metrics.L0Shape
 	var fanoutSum, aligned int64
+	var widenSum float64
+	var widened int64
 	for s := range levels {
 		shape.Files += int64(len(levels[s]))
 		if s == 0 {
@@ -665,10 +667,17 @@ func l0Shape(levels [][]placed) metrics.L0Shape {
 			}
 			var n int64
 			onEdge := false
+			ulo, uhi := p.lo, p.hi // the range once the files below are taken too
 			for ; j >= 0 && bytes.Compare(below[j].hi, p.lo) >= 0; j-- {
 				n++
 				if bytes.Equal(below[j].lo, p.lo) {
 					onEdge = true
+				}
+				if bytes.Compare(below[j].lo, ulo) < 0 {
+					ulo = below[j].lo
+				}
+				if bytes.Compare(below[j].hi, uhi) > 0 {
+					uhi = below[j].hi
 				}
 			}
 			if n == 0 {
@@ -682,11 +691,22 @@ func l0Shape(levels [][]placed) metrics.L0Shape {
 			if onEdge {
 				aligned++
 			}
+			if own := keyFraction(p.lo, p.hi, lo, hi); own > 0 {
+				w := keyFraction(ulo, uhi, lo, hi) / own
+				widenSum += w
+				widened++
+				if w > shape.StepWideningMax {
+					shape.StepWideningMax = w
+				}
+			}
 		}
 	}
 	if shape.Measured > 0 {
 		shape.StepFanout = float64(fanoutSum) / float64(shape.Measured)
 		shape.AlignedStarts = float64(aligned) / float64(shape.Measured)
+	}
+	if widened > 0 {
+		shape.StepWidening = widenSum / float64(widened)
 	}
 	return shape
 }
