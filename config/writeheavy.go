@@ -3,7 +3,7 @@ package config
 const (
 	WriteHeavyLBaseMaxBytes         int64 = 4 << 30
 	WriteHeavyL0CompactionThreshold       = 4
-	WriteHeavyL0StopWritesThreshold       = 24
+	WriteHeavyL0StopWritesThreshold       = 12
 	WriteHeavyTargetFileSizeL0      int64 = 16 << 20
 	WriteHeavyTargetFileSizeLbase   int64 = 32 << 20
 	WriteHeavyTargetFileSizeLbase1  int64 = 64 << 20
