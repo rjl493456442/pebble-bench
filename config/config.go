@@ -38,7 +38,7 @@ type BenchConfig struct {
 	L0CompactionMaxBytes       *uint64  `yaml:"l0_compaction_max_bytes"`
 	L0CompactionGrowthLimit    *float64 `yaml:"l0_compaction_growth_limit"`
 	L0CompactionGrowthMinBytes *uint64  `yaml:"l0_compaction_growth_min_bytes"`
-	ReadSamplingMultiplier    *int64  `yaml:"read_sampling_multiplier"`
+	ReadSamplingMultiplier     *int64   `yaml:"read_sampling_multiplier"`
 
 	// LBaseMaxBytes sets the target maximum bytes for Lbase. Pebble's dynamic
 	// level-sizing scales every other level off this value, so it's the primary
@@ -113,11 +113,7 @@ type LevelConfig struct {
 type BenchmarkConfig struct {
 	Name        string        `yaml:"name"`
 	Duration    time.Duration `yaml:"duration"`
-	// Settle is how long, at most, to wait after the workers stop for
-	// compaction to catch up before the final snapshot is taken. Zero takes
-	// the snapshot immediately, which understates the write amplification of
-	// any run that ends with a compaction backlog.
-	Settle time.Duration `yaml:"settle"`
+	Settle      time.Duration `yaml:"settle"`
 	Concurrency int           `yaml:"concurrency"`
 	NumOps      uint64        `yaml:"num_ops"`
 	KeySize     int           `yaml:"key_size"`
@@ -237,4 +233,3 @@ func (c *BenchConfig) GetNoSync() bool {
 	}
 	return true
 }
-
