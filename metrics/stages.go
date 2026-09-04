@@ -11,25 +11,37 @@ package metrics
 // exists to prove it.
 type StageBreakdown struct {
 	Accepted   uint64 `json:"accepted"`     // logical bytes handed to the database
-	WAL        uint64 `json:"wal"`          // physical WAL cost, framing and padding included
+	WAL        uint64 `json:"wal"`          // WAL cost, as the logical bytes; pebble tracks no physical figure
 	FlushToL0  uint64 `json:"flush_to_l0"`  // sstable bytes produced by flushes
 	IntraL0    uint64 `json:"intra_l0"`     // rewritten within L0, pure overhead
 	AboveLbase uint64 `json:"above_lbase"`  // written into levels shallower than the base level
 	L0ToLbase  uint64 `json:"l0_to_lbase"`  // written into the base level, ie the L0 drain
 	LbaseToBot uint64 `json:"lbase_to_bot"` // written into every level below the base
-	Total      uint64 `json:"total"`        // physical bytes written, the numerator of write amp
-	Residual   int64  `json:"residual"`     // Total less the rows above; zero when they account for it all
+	Total      uint64 `json:"total"`        // the rows above summed: bytes written, the numerator of write amp
+	Residual   int64  `json:"residual"`     // the adapter's headline BytesWritten less Total; non-zero means the two disagree
 }
 
 // BuildStageBreakdown decomposes m's write volume.
+//
+// Total is built from the same level counters as the rows, so the rows account
+// for it by construction. Residual compares that against the headline
+// BytesWritten the db adapter reported, which is a genuine cross-check: the
+// two are computed separately, and a result file written by an adapter that
+// summed differently, as earlier versions did, shows the difference here
+// instead of silently inheriting it.
 //
 // Two details are easy to get wrong and are worth stating, because getting
 // either wrong leaves the rows short of the total by a margin large enough to
 // change a conclusion:
 //
-// The WAL row is the physical cost, not the logical bytes accepted. The column
-// accounts for what reached the disk, and framing and padding are part of
-// that; the logical figure is the denominator of the ratios, not a row.
+// The WAL row is the logical bytes accepted, and deliberately not pebble's
+// WAL.BytesWritten. That field is not a physical figure despite the name: it
+// is Levels[0].TableBytesIn plus the live WAL size, and every intra-L0
+// compaction adds its input to TableBytesIn because L0 is its output level.
+// Read as the WAL row it would count intra-L0 bytes a second time, on top of
+// the intra-L0 row, and on a run that leaned on intra-L0 it overstated the
+// total by that entire row. Pebble keeps no physical WAL byte count, and the
+// framing the logical figure omits is well under a percent.
 //
 // A level shallower than the current base level belongs to no stage at first
 // glance, but it holds bytes all the same: the base level moves down as a
@@ -39,11 +51,7 @@ type StageBreakdown struct {
 func BuildStageBreakdown(m *DBMetrics) StageBreakdown {
 	s := StageBreakdown{
 		Accepted: m.WALBytesIn,
-		WAL:      m.WALBytesWritten,
-		// Not BytesWritten plus the WAL: pebble's Metrics.Total folds the WAL
-		// and any ingested bytes into the flushed total, so BytesWritten
-		// already carries them and adding them again counts the WAL twice.
-		Total: m.BytesWritten,
+		WAL:      m.WALBytesIn,
 	}
 	s.FlushToL0 = m.Levels[0].BytesFlushed
 	s.IntraL0 = m.Levels[0].BytesCompacted
@@ -58,7 +66,8 @@ func BuildStageBreakdown(m *DBMetrics) StageBreakdown {
 			s.AboveLbase += written
 		}
 	}
-	s.Residual = int64(s.Total) - int64(s.WAL+s.FlushToL0+s.IntraL0+s.AboveLbase+s.L0ToLbase+s.LbaseToBot)
+	s.Total = s.WAL + s.FlushToL0 + s.IntraL0 + s.AboveLbase + s.L0ToLbase + s.LbaseToBot
+	s.Residual = int64(m.BytesWritten) - int64(s.Total)
 	return s
 }
 

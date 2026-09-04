@@ -120,6 +120,10 @@ func PrintSummary(r *Result) {
 	fmt.Printf("  Write Stalls:    %d\n", r.PebbleFinal.WriteStallStats.Count)
 	if r.PebbleFinal.WriteStallStats.Count > 0 {
 		ws := r.PebbleFinal.WriteStallStats
+		for _, reason := range ws.Reasons() {
+			rs := ws.ByReason[reason]
+			fmt.Printf("    %-32s %6d  %s\n", reason, rs.Count, rs.TotalTime.Round(time.Millisecond))
+		}
 		fmt.Printf("    avg:           %s\n", ws.AvgTime().Round(time.Millisecond))
 		fmt.Printf("    max:           %s\n", ws.MaxTime.Round(time.Millisecond))
 		fmt.Printf("    total:         %s\n", ws.TotalTime.Round(time.Millisecond))
@@ -236,6 +240,10 @@ func WriteMarkdown(path string, r *Result) error {
 		b.WriteString(fmt.Sprintf("| Stall Avg | %s |\n", ws.AvgTime().Round(time.Millisecond)))
 		b.WriteString(fmt.Sprintf("| Stall Max | %s |\n", ws.MaxTime.Round(time.Millisecond)))
 		b.WriteString(fmt.Sprintf("| Stall Total | %s |\n", ws.TotalTime.Round(time.Millisecond)))
+		for _, reason := range ws.Reasons() {
+			rs := ws.ByReason[reason]
+			b.WriteString(fmt.Sprintf("| Stall: %s | %d / %s |\n", reason, rs.Count, rs.TotalTime.Round(time.Millisecond)))
+		}
 	}
 
 	// Sync-call counts and timings (fsync / fdatasync / sync_file_range).
@@ -718,6 +726,14 @@ func PrintComparison(baseline, current *Result) {
 	bStall := float64(baseline.PebbleFinal.WriteStallStats.TotalTime.Milliseconds())
 	cStall := float64(current.PebbleFinal.WriteStallStats.TotalTime.Milliseconds())
 	fmt.Printf("%-20s %18.0fms %18.0fms %10s\n", "  Stall Total", bStall, cStall, pctDiff(bStall, cStall))
+	// Split by reason, on the union of reasons either side saw: a change that
+	// keeps the total flat can still have moved every stall from the memtable
+	// queue to L0, or back, and that is the finding.
+	for _, reason := range stallReasonUnion(baseline.PebbleFinal.WriteStallStats, current.PebbleFinal.WriteStallStats) {
+		bR := float64(baseline.PebbleFinal.WriteStallStats.ByReason[reason].TotalTime.Milliseconds())
+		cR := float64(current.PebbleFinal.WriteStallStats.ByReason[reason].TotalTime.Milliseconds())
+		fmt.Printf("%-20s %18.0fms %18.0fms %10s\n", "    "+shortStallReason(reason), bR, cR, pctDiff(bR, cR))
+	}
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Block Cache Hits", baseline.PebbleFinal.BlockCacheHits, current.PebbleFinal.BlockCacheHits, pctDiff(float64(baseline.PebbleFinal.BlockCacheHits), float64(current.PebbleFinal.BlockCacheHits)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Table Cache Hits", baseline.PebbleFinal.TableCacheHits, current.PebbleFinal.TableCacheHits, pctDiff(float64(baseline.PebbleFinal.TableCacheHits), float64(current.PebbleFinal.TableCacheHits)))
 	fmt.Printf("%-20s %20d %20d %10s\n", "  Filter Hits", baseline.PebbleFinal.FilterHits, current.PebbleFinal.FilterHits, pctDiff(float64(baseline.PebbleFinal.FilterHits), float64(current.PebbleFinal.FilterHits)))
@@ -1201,4 +1217,35 @@ func printMovedComparison(b, c PebbleSnapshot) {
 // move total that wrote more than it read.
 func sourceBytes(b CompactionBucket) uint64 {
 	return b.L0Bytes + b.StartBytes
+}
+
+// stallReasonUnion returns every stall reason seen by either side of a
+// comparison, most time-consuming first by the baseline and then by the
+// current run, so the rows are stable across reports.
+func stallReasonUnion(a, b WriteStallStats) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range []WriteStallStats{a, b} {
+		for _, r := range s.Reasons() {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+// shortStallReason abbreviates pebble's stall reasons to fit a table column.
+func shortStallReason(reason string) string {
+	switch reason {
+	case "memtable count limit reached":
+		return "memtable queue"
+	case "L0 file count limit exceeded":
+		return "L0 limit"
+	}
+	if len(reason) > 16 {
+		return reason[:16]
+	}
+	return reason
 }

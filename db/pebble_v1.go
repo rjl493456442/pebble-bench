@@ -320,7 +320,7 @@ func newV1Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metric
 			}
 		},
 		WriteStallBegin: func(info pebble.WriteStallBeginInfo) {
-			writeStallTracker.Begin()
+			writeStallTracker.Begin(info.Reason)
 			if logWriteStall {
 				log.Printf("Write stall begin reason: %s", info.Reason)
 			}
@@ -441,11 +441,23 @@ func (d *v1DB) Close() error { return d.db.Close() }
 func (d *v1DB) Metrics() *metrics.DBMetrics {
 	m := d.db.Metrics()
 	total := m.Total()
+
+	// From the levels, not Total(): see the v2 adapter for why. v1 has the
+	// same WAL.BytesWritten derivation and the same fold into Total().
+	var written uint64
+	for i := range m.Levels {
+		written += m.Levels[i].BytesFlushed + m.Levels[i].BytesCompacted
+	}
+	written += m.WAL.BytesIn
+	writeAmp := 0.0
+	if m.WAL.BytesIn > 0 {
+		writeAmp = float64(written) / float64(m.WAL.BytesIn)
+	}
 	out := &metrics.DBMetrics{
 		DiskSpaceUsage:    m.DiskSpaceUsage(),
 		ReadAmp:           int(m.ReadAmp()),
-		WriteAmp:          total.WriteAmp(),
-		BytesWritten:      total.BytesFlushed + total.BytesCompacted,
+		WriteAmp:          writeAmp,
+		BytesWritten:      written,
 		BytesRead:         total.BytesRead,
 		BytesIn:           total.BytesIn,
 		WALBytesIn:        m.WAL.BytesIn,

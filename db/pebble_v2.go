@@ -338,7 +338,7 @@ func newV2Listener(flushTracker *metrics.FlushTracker, writeStallTracker *metric
 			}
 		},
 		WriteStallBegin: func(info pebble.WriteStallBeginInfo) {
-			writeStallTracker.Begin()
+			writeStallTracker.Begin(info.Reason)
 			if logWriteStall {
 				log.Printf("Write stall begin reason: %s", info.Reason)
 			}
@@ -454,13 +454,31 @@ func (d *v2DB) Close() error { return d.db.Close() }
 func (d *v2DB) Metrics() *metrics.DBMetrics {
 	m := d.db.Metrics()
 	total := m.Total()
-	out := &metrics.DBMetrics{
-		DiskSpaceUsage: m.DiskSpaceUsage(),
-		ReadAmp:        int(m.ReadAmp()),
-		WriteAmp:       total.WriteAmp(),
 
-		// v2 tracks sstable and blob bytes separately.
-		BytesWritten:      total.TableBytesFlushed + total.TableBytesCompacted + total.BlobBytesFlushed + total.BlobBytesCompacted,
+	// Sum the sstable (and blob) bytes from the levels themselves rather than
+	// taking them from Total(). Total() folds m.WAL.BytesWritten into its
+	// flushed figure, and that field is not the physical WAL cost its name
+	// suggests: pebble derives it from Levels[0].TableBytesIn, which every
+	// intra-L0 compaction also adds its input to. Under intra-L0 pressure the
+	// Total() figure therefore counts those bytes twice, once here and once
+	// in L0's compacted counter. Pebble does not track the physical WAL cost
+	// at all, so the logical bytes stand in for it; the framing overhead they
+	// omit is well under a percent.
+	var written uint64
+	for i := range m.Levels {
+		l := &m.Levels[i]
+		written += l.TableBytesFlushed + l.TableBytesCompacted + l.BlobBytesFlushed + l.BlobBytesCompacted
+	}
+	written += m.WAL.BytesIn
+	writeAmp := 0.0
+	if m.WAL.BytesIn > 0 {
+		writeAmp = float64(written) / float64(m.WAL.BytesIn)
+	}
+	out := &metrics.DBMetrics{
+		DiskSpaceUsage:    m.DiskSpaceUsage(),
+		ReadAmp:           int(m.ReadAmp()),
+		WriteAmp:          writeAmp,
+		BytesWritten:      written,
 		BytesRead:         total.TableBytesRead,
 		BytesIn:           total.TableBytesIn,
 		WALBytesIn:        m.WAL.BytesIn,

@@ -7,12 +7,12 @@ package metrics
 type DBMetrics struct {
 	DiskSpaceUsage    uint64
 	ReadAmp           int
-	WriteAmp          float64 // total bytes written to disk / logical bytes written
-	BytesWritten      uint64  // actual bytes written to disk (flushed + compacted, incl. blob)
+	WriteAmp          float64 // BytesWritten / WALBytesIn; not pebble's own, whose denominator is BytesIn
+	BytesWritten      uint64  // bytes written to disk: every level's flushed and compacted bytes (incl. blob) plus the WAL
 	BytesRead         uint64  // bytes read during compaction
-	BytesIn           uint64  // Pebble's write-amp denominator: WAL.BytesWritten (physical) + ingested
+	BytesIn           uint64  // pebble's own write-amp denominator, WAL.BytesWritten + ingested; see WALBytesWritten
 	WALBytesIn        uint64  // logical bytes appended to the WAL (the real user ingest)
-	WALBytesWritten   uint64  // physical bytes written to the WAL (inflated by file recycling)
+	WALBytesWritten   uint64  // pebble's WAL.BytesWritten: Levels[0].TableBytesIn + live WAL size, NOT physical bytes; intra-L0 input lands in it
 	CompactionCount   int64
 	CompactionDebt    uint64
 	CompactionsActive int64

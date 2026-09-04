@@ -6,8 +6,11 @@ import "testing"
 // to it.
 func TestStageBreakdownAccountsForTotal(t *testing.T) {
 	m := &DBMetrics{
-		WALBytesIn:      1000,
-		WALBytesWritten: 1010,
+		WALBytesIn: 1000,
+		// What pebble reports as WAL.BytesWritten: the logical bytes, plus the
+		// 50 intra-L0 bytes it folds into Levels[0].TableBytesIn, plus a little
+		// live WAL. The breakdown must not read this as the WAL row.
+		WALBytesWritten: 1000 + 50 + 10,
 		BaseLevel:       3,
 	}
 	m.Levels[0] = LevelStat{BytesFlushed: 900, BytesCompacted: 50} // flush + intra-L0
@@ -15,19 +18,22 @@ func TestStageBreakdownAccountsForTotal(t *testing.T) {
 	m.Levels[3] = LevelStat{BytesCompacted: 800}                   // the base level
 	m.Levels[5] = LevelStat{BytesCompacted: 400}                   // below it
 	m.Levels[6] = LevelStat{BytesCompacted: 600}
-	// What pebble's Total reports: every level's bytes, plus the WAL folded in.
-	m.BytesWritten = 900 + 50 + 300 + 800 + 400 + 600 + 1010
+	// What the adapter reports: every level's bytes, plus the logical WAL bytes.
+	m.BytesWritten = 900 + 50 + 300 + 800 + 400 + 600 + 1000
 
 	s := BuildStageBreakdown(m)
 	if s.Residual != 0 {
-		t.Fatalf("rows leave %d bytes unaccounted for", s.Residual)
+		t.Fatalf("adapter's BytesWritten and the rows disagree by %d", s.Residual)
+	}
+	if s.Total != m.BytesWritten {
+		t.Fatalf("total %d, adapter reported %d", s.Total, m.BytesWritten)
 	}
 	for _, c := range []struct {
 		name string
 		got  uint64
 		want uint64
 	}{
-		{"WAL", s.WAL, 1010},
+		{"WAL", s.WAL, 1000},
 		{"flush", s.FlushToL0, 900},
 		{"intra-L0", s.IntraL0, 50},
 		{"above Lbase", s.AboveLbase, 300},
@@ -38,7 +44,7 @@ func TestStageBreakdownAccountsForTotal(t *testing.T) {
 			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)
 		}
 	}
-	if amp := s.WriteAmp(); amp != 4.06 {
-		t.Errorf("write amp = %v, want 4.06", amp)
+	if amp := s.WriteAmp(); amp != 4.05 {
+		t.Errorf("write amp = %v, want 4.05", amp)
 	}
 }
