@@ -130,7 +130,7 @@ Supported override keys include: `data_dir`, `cache_mb`, `max_open_files`,
 `pebble_v2`, `mem_table_size`, `mem_table_count`, `max_concurrent_compactions`,
 `l0_compaction_threshold`, `bytes_per_sync`, `wal_bytes_per_sync`, `disable_wal`,
 `no_sync`, `bloom_filter_bits`, and `benchmark.*` (`name`, `duration`,
-`concurrency`, `num_ops`, `key_size`, `value_size`, `batch_size`, `read_percent`,
+`concurrency`, `num_ops`, `key_size`, `value_size`, `batch_size`, `key_pattern` (`random` or `sorted[:N]`, see config.go), `read_percent`,
 `init_target_size`). Run any command with an invalid key to see the full list.
 
 ## Environment variables

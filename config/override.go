@@ -244,6 +244,8 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 			return err
 		}
 		cfg.Benchmark.BatchSize = v
+	case "benchmark.key_pattern":
+		cfg.Benchmark.KeyPattern = value
 	case "benchmark.read_percent":
 		v, err := strconv.Atoi(value)
 		if err != nil {
@@ -276,7 +278,7 @@ func ListOverrideKeys() []string {
 		"bloom_filter_bits",
 		"benchmark.name", "benchmark.duration", "benchmark.settle", "benchmark.concurrency",
 		"benchmark.num_ops", "benchmark.key_size", "benchmark.value_size",
-		"benchmark.batch_size", "benchmark.read_percent",
+		"benchmark.batch_size", "benchmark.key_pattern", "benchmark.read_percent",
 		"benchmark.init_target_size",
 	}
 }

@@ -122,6 +122,24 @@ type BenchmarkConfig struct {
 	// Batch-specific
 	BatchSize int `yaml:"batch_size"`
 
+	// KeyPattern selects how the write benchmark lays out its keys.
+	//
+	//   random      each key is an independent random hash (the default)
+	//   sorted[:N]  N append-only streams over N disjoint, equal ranges of the
+	//               key space; each stream's keys are strictly increasing.
+	//
+	// The sorted pattern is the idealised shape of a snap sync: geth fetches
+	// the account and storage ranges with a fixed number of concurrent range
+	// fetchers, each walking its hash range upwards, so every flush lands one
+	// narrow file at the frontier of each range and those files overlap nothing
+	// older. That is what lets pebble move L0 files into the base level without
+	// rewriting them, and it is why the same configuration behaves very
+	// differently under the two patterns. A real snap sync adds some disorder
+	// (healing writes, storage tries out of step with accounts), so it sits
+	// between the two. N defaults to 16, geth's account-range concurrency, and
+	// should be a multiple of the worker count.
+	KeyPattern string `yaml:"key_pattern"`
+
 	// Mixed-specific
 	ReadPercent int `yaml:"read_percent"`
 
