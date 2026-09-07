@@ -32,7 +32,7 @@ BIN="$OUT/pebble-bench"
 
 {
   echo "date:    $(date -u +%FT%TZ)"
-  echo "commit:  $(git -C "$ROOT" rev-parse HEAD) $(git -C "$ROOT" status --porcelain | grep -q . && echo '(dirty)')"
+  echo "commit:  $(git -C "$ROOT" rev-parse HEAD) $(git -C "$ROOT" status --porcelain --untracked-files=no | grep -q . && echo '(dirty)')"
   echo "go:      $(go version)"
   echo "host:    $(uname -srm) $(nproc 2>/dev/null || sysctl -n hw.ncpu) cores"
   echo "disk:    $(df -h "$DATA" | tail -1)"
