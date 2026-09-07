@@ -246,6 +246,24 @@ func applyOverride(cfg *BenchConfig, key, value string) error {
 		cfg.Benchmark.BatchSize = v
 	case "benchmark.key_pattern":
 		cfg.Benchmark.KeyPattern = value
+	case "benchmark.random_fraction":
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		cfg.Benchmark.RandomFraction = v
+	case "benchmark.value_entropy":
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		cfg.Benchmark.ValueEntropy = v
+	case "benchmark.seed":
+		v, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return err
+		}
+		cfg.Benchmark.Seed = v
 	case "benchmark.read_percent":
 		v, err := strconv.Atoi(value)
 		if err != nil {
@@ -278,7 +296,8 @@ func ListOverrideKeys() []string {
 		"bloom_filter_bits",
 		"benchmark.name", "benchmark.duration", "benchmark.settle", "benchmark.concurrency",
 		"benchmark.num_ops", "benchmark.key_size", "benchmark.value_size",
-		"benchmark.batch_size", "benchmark.key_pattern", "benchmark.read_percent",
+		"benchmark.batch_size", "benchmark.key_pattern", "benchmark.random_fraction",
+		"benchmark.value_entropy", "benchmark.seed", "benchmark.read_percent",
 		"benchmark.init_target_size",
 	}
 }

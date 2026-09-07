@@ -2,6 +2,7 @@ package bench
 
 import (
 	"bytes"
+	"math/rand"
 	"testing"
 )
 
@@ -26,13 +27,20 @@ func TestSortedKeys(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		in   string
-		want int
-		err  bool
-	}{{"", 0, false}, {"random", 0, false}, {"sorted", 16, false}, {"sorted:4", 4, false}, {"sorted:0", 0, true}, {"zigzag", 0, true}} {
-		got, err := parseKeyPattern(c.in)
-		if (err != nil) != c.err || got != c.want {
-			t.Fatalf("parseKeyPattern(%q) = %d, %v", c.in, got, err)
+		in    string
+		want  int
+		mixed bool
+		err   bool
+	}{{"", 0, false, false}, {"random", 0, false, false}, {"sorted", 16, false, false}, {"sorted:4", 4, false, false},
+		{"snapsync", 16, true, false}, {"snapsync:8", 8, true, false}, {"sorted:0", 0, false, true}, {"zigzag", 0, false, true}} {
+		got, mixed, err := parseKeyPattern(c.in)
+		if (err != nil) != c.err || got != c.want || mixed != c.mixed {
+			t.Fatalf("parseKeyPattern(%q) = %d, %v, %v", c.in, got, mixed, err)
 		}
+	}
+	// Entropy: the leading share is random, the tail zero.
+	v := valueOf(rand.New(rand.NewSource(1)), 100, 0.7)
+	if len(v) != 100 || !bytes.Equal(v[70:], make([]byte, 30)) || bytes.Equal(v[:70], make([]byte, 70)) {
+		t.Fatalf("valueOf entropy 0.7 wrong: %x", v)
 	}
 }

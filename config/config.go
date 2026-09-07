@@ -128,17 +128,36 @@ type BenchmarkConfig struct {
 	//   sorted[:N]  N append-only streams over N disjoint, equal ranges of the
 	//               key space; each stream's keys are strictly increasing.
 	//
+	//   snapsync[:N] the sorted streams plus a share of random-key batches,
+	//               set by RandomFraction
+	//
 	// The sorted pattern is the idealised shape of a snap sync: geth fetches
 	// the account and storage ranges with a fixed number of concurrent range
 	// fetchers, each walking its hash range upwards, so every flush lands one
 	// narrow file at the frontier of each range and those files overlap nothing
 	// older. That is what lets pebble move L0 files into the base level without
 	// rewriting them, and it is why the same configuration behaves very
-	// differently under the two patterns. A real snap sync adds some disorder
-	// (healing writes, storage tries out of step with accounts), so it sits
-	// between the two. N defaults to 16, geth's account-range concurrency, and
-	// should be a multiple of the worker count.
+	// differently under the two patterns. A real snap sync is not that tidy:
+	// the healing phase writes wherever the trie turned out to be missing, and
+	// storage ranges do not keep step with accounts. The snapsync pattern adds
+	// that disorder as a fraction of random-key batches. N defaults to 16,
+	// geth's account-range concurrency, and should be a multiple of the worker
+	// count.
 	KeyPattern string `yaml:"key_pattern"`
+
+	// RandomFraction is the share of batches written with random keys under the
+	// snapsync pattern; the other patterns ignore it. Default 0.1.
+	RandomFraction float64 `yaml:"random_fraction"`
+
+	// ValueEntropy is the share of each value that is random bytes, the rest
+	// being zero, so that snappy compresses a value to roughly this fraction of
+	// its size. 1 (the default) is incompressible. Geth's state compresses to
+	// about 0.7 on mainnet.
+	ValueEntropy float64 `yaml:"value_entropy"`
+
+	// Seed fixes the random source, per worker, so a run can be repeated with
+	// the same keys and values. 0 seeds from the clock.
+	Seed int64 `yaml:"seed"`
 
 	// Mixed-specific
 	ReadPercent int `yaml:"read_percent"`
@@ -191,6 +210,9 @@ func DefaultConfig() *BenchConfig {
 			ValueSize:   128,
 			BatchSize:   100,
 			ReadPercent: 80,
+
+			RandomFraction: 0.1,
+			ValueEntropy:   1,
 		},
 	}
 }

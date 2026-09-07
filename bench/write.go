@@ -25,7 +25,10 @@ type Write struct {
 	batchSize   int
 	valueSize   int
 	concurrency int
-	streams     int // 0 for random keys, else the number of sorted streams
+	streams     int     // 0 for random keys, else the number of sorted streams
+	randomFrac  float64 // share of random-key batches mixed into the streams
+	entropy     float64 // share of each value that is random bytes
+	seed        int64   // fixed random seed, or 0 for the clock
 }
 
 func (b *Write) Name() string { return "write" }
@@ -39,40 +42,71 @@ func (b *Write) Setup(database db.DB, sync bool, cfg *config.BenchmarkConfig, _ 
 	if b.batchSize < 1 {
 		b.batchSize = 100
 	}
-	streams, err := parseKeyPattern(cfg.KeyPattern)
+	streams, mixed, err := parseKeyPattern(cfg.KeyPattern)
 	if err != nil {
 		return err
 	}
 	b.streams = streams
-	if streams == 0 {
-		log.Printf("Write key pattern: random")
-	} else {
-		log.Printf("Write key pattern: sorted, %d append-only streams over disjoint ranges (%d per worker)",
-			streams, streams/b.concurrency)
-		if streams%b.concurrency != 0 {
-			log.Printf("WARNING: %d streams do not divide evenly over %d workers; some workers carry one more than others", streams, b.concurrency)
+	if mixed {
+		b.randomFrac = cfg.RandomFraction
+		if b.randomFrac < 0 || b.randomFrac > 1 {
+			return fmt.Errorf("random_fraction %v: want 0..1", b.randomFrac)
 		}
 	}
+	b.entropy = cfg.ValueEntropy
+	if b.entropy <= 0 || b.entropy > 1 {
+		return fmt.Errorf("value_entropy %v: want (0, 1]", b.entropy)
+	}
+	b.seed = cfg.Seed
+	switch {
+	case streams == 0:
+		log.Printf("Write key pattern: random")
+	case mixed:
+		log.Printf("Write key pattern: snapsync, %d append-only streams over disjoint ranges (%d per worker) plus %.0f%% random-key batches",
+			streams, streams/b.concurrency, 100*b.randomFrac)
+	default:
+		log.Printf("Write key pattern: sorted, %d append-only streams over disjoint ranges (%d per worker)",
+			streams, streams/b.concurrency)
+	}
+	if streams > 0 && streams%b.concurrency != 0 {
+		log.Printf("WARNING: %d streams do not divide evenly over %d workers; some workers carry one more than others", streams, b.concurrency)
+	}
+	log.Printf("Write values: %d bytes, entropy %.2f; seed %d", b.valueSize, b.entropy, b.seed)
 	return nil
 }
 
-// parseKeyPattern returns the number of sorted streams, or 0 for random keys.
-func parseKeyPattern(p string) (int, error) {
+// parseKeyPattern returns the number of sorted streams (0 for random keys)
+// and whether random-key batches are mixed in.
+func parseKeyPattern(p string) (streams int, mixed bool, err error) {
 	p = strings.ToLower(strings.TrimSpace(p))
-	switch {
-	case p == "" || p == "random":
-		return 0, nil
-	case p == "sorted":
-		return 16, nil
-	case strings.HasPrefix(p, "sorted:"):
-		n, err := strconv.Atoi(strings.TrimPrefix(p, "sorted:"))
-		if err != nil || n < 1 || n > 65536 {
-			return 0, fmt.Errorf("key_pattern %q: want sorted:N with 1 <= N <= 65536", p)
+	name, arg, hasArg := strings.Cut(p, ":")
+	switch name {
+	case "", "random":
+		return 0, false, nil
+	case "sorted", "snapsync":
+		mixed = name == "snapsync"
+		if !hasArg {
+			return 16, mixed, nil
 		}
-		return n, nil
+		n, err := strconv.Atoi(arg)
+		if err != nil || n < 1 || n > 65536 {
+			return 0, false, fmt.Errorf("key_pattern %q: want %s:N with 1 <= N <= 65536", p, name)
+		}
+		return n, mixed, nil
 	default:
-		return 0, fmt.Errorf("unknown key_pattern %q (random, sorted, sorted:N)", p)
+		return 0, false, fmt.Errorf("unknown key_pattern %q (random, sorted[:N], snapsync[:N])", p)
 	}
+}
+
+// valueOf returns a value of size bytes of which the leading entropy share is
+// random and the rest zero, so that compression takes it to about that share.
+func valueOf(rng *rand.Rand, size int, entropy float64) []byte {
+	if entropy >= 1 {
+		return datagen.RandomValue(rng, size)
+	}
+	v := make([]byte, size)
+	copy(v, datagen.RandomValue(rng, int(float64(size)*entropy)))
+	return v
 }
 
 // sortedKey is the n-th key of stream r out of streams. The first two bytes
@@ -90,7 +124,11 @@ func sortedKey(r, streams int, n uint64) []byte {
 }
 
 func (b *Write) Run(ctx context.Context, workerID int, reg *metrics.HistogramRegistry) error {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+	seed := b.seed
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
+	rng := rand.New(rand.NewSource(seed + int64(workerID)))
 	hist := reg.Get("write")
 
 	// Streams owned by this worker, and each one's next key. Workers take
@@ -115,10 +153,13 @@ func (b *Write) Run(ctx context.Context, workerID int, reg *metrics.HistogramReg
 		default:
 		}
 		batch := b.db.NewBatch()
-		if b.streams == 0 {
+		// Under snapsync a share of batches lands on random keys, standing in
+		// for the healing phase; the draw is per batch so that a healing
+		// batch, like a real one, is entirely out of order.
+		if b.streams == 0 || (b.randomFrac > 0 && rng.Float64() < b.randomFrac) {
 			for range b.batchSize {
 				key := datagen.RandomValue(rng, 32)
-				val := datagen.RandomValue(rng, b.valueSize)
+				val := valueOf(rng, b.valueSize, b.entropy)
 				if err := batch.Set(key, val); err != nil {
 					batch.Close()
 					return err
@@ -132,7 +173,7 @@ func (b *Write) Run(ctx context.Context, workerID int, reg *metrics.HistogramReg
 			for range b.batchSize {
 				key := sortedKey(owned[i], b.streams, next[i])
 				next[i]++
-				val := datagen.RandomValue(rng, b.valueSize)
+				val := valueOf(rng, b.valueSize, b.entropy)
 				if err := batch.Set(key, val); err != nil {
 					batch.Close()
 					return err

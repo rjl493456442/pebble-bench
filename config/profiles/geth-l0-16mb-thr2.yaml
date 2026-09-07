@@ -1,0 +1,42 @@
+# geth-baseline.yaml with only the L0 file size raised to 16MB. Isolates
+# the file size from the compaction-threshold change in geth-l0-16mb.yaml. Everything
+# pinned here is what geth passes explicitly; the rest are pebble defaults,
+# which geth also leaves alone. Memtables: 4 × cache/8 with the queue stopping
+# writes at 8, exactly geth's memTableNumber arithmetic.
+cache_mb: 2048
+max_open_files: 40960
+mem_table_count: 4
+mem_table_stop_writes_threshold: 8
+
+l0_compaction_threshold: 2
+l0_stop_writes_threshold: 12
+l0_compaction_concurrency: 1
+compaction_debt_concurrency: 268435456   # 256MB
+read_sampling_multiplier: -1
+# max_concurrent_compactions: runtime.NumCPU, as geth
+
+bytes_per_sync: 524288
+wal_bytes_per_sync: 524288
+no_sync: true
+bloom_filter_bits: 10
+
+levels:
+  - target_file_size: 16777216   # L0: 16MB; FlushSplitBytes follows at 2× = 32MB
+  - target_file_size: 4194304    # LBase and below: geth's ladder, unchanged
+  - target_file_size: 8388608
+  - target_file_size: 16777216
+  - target_file_size: 33554432
+  - target_file_size: 67108864
+  - target_file_size: 134217728
+    no_filter: true              # geth: no bloom filter on the last level
+
+benchmark:
+  name: write
+  duration: 30m
+  settle: 10m
+  concurrency: 4
+  key_size: 32
+  value_size: 224
+  batch_size: 400                # 400 × 256B ≈ 100KB, ethdb.IdealBatchSize
+  # key_pattern, value_entropy and random_fraction are set per workload by the
+  # script; seed is fixed there too so runs repeat.
